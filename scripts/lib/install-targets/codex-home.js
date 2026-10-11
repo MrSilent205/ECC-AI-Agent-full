@@ -15,6 +15,7 @@ const adapter = createInstallTargetAdapter({
 });
 
 const USER_REFERENCE = '.codex/user-config.example.toml';
+const USER_PROFILES = ['.codex/strict.config.toml', '.codex/yolo.config.toml'];
 
 module.exports = Object.freeze({
   ...adapter,
@@ -36,12 +37,19 @@ module.exports = Object.freeze({
         }
       }
       // The planner materializes these operations, then keeps the last copy per
-      // destination before preview/state/apply. Only the user reference survives.
+      // destination before preview/state/apply.
+      // Named profiles ship as sibling files because Codex 0.134.0+ reads
+      // `<name>.config.toml` for `codex -p <name>` and rejects legacy
+      // `[profiles.<name>]` tables inside config.toml.
       return [operation, createManagedOperation({
         moduleId: operation.moduleId,
         sourceRelativePath: USER_REFERENCE,
         destinationPath: path.join(operation.destinationPath, 'config.toml'),
-      })];
+      }), ...USER_PROFILES.map(sourceRelativePath => createManagedOperation({
+        moduleId: operation.moduleId,
+        sourceRelativePath,
+        destinationPath: path.join(operation.destinationPath, path.basename(sourceRelativePath)),
+      }))];
     });
   },
 });

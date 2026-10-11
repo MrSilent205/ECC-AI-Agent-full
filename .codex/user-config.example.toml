@@ -90,18 +90,13 @@ startup_timeout_sec = 30
 # Preserve ECC's explicit multi-agent setting.
 multi_agent = true
 
-# Named profiles are available for explicit selection; defining one does not select it.
-# The default above remains on-request. Approval and sandbox policy are separate.
-# Select a supported profile explicitly with `codex -p <name>`.
-[profiles.strict]
-approval_policy = "on-request"
-sandbox_mode = "read-only"
-web_search = "cached"
-
-[profiles.yolo]
-approval_policy = "never"
-sandbox_mode = "workspace-write"
-web_search = "live"
+# Named profiles live in sibling files, not in this file: Codex 0.134.0 and
+# later no longer read `[profiles.<name>]` tables from config.toml, and
+# `codex -p <name>` fails while such a table is present. Select a supported
+# profile explicitly with `codex -p <name>`, which reads
+# `<CODEX_HOME>/<name>.config.toml` (shipped beside this reference as
+# `strict.config.toml` and `yolo.config.toml`). Defining a profile file does
+# not select it; the approval and sandbox policy above remain the default.
 
 [agents]
 # Multi-agent role limits and local role definitions.

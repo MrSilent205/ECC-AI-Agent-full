@@ -165,22 +165,27 @@ const checks = [
     assert.strictEqual(project.agents.max_threads, 6);
     assert.strictEqual(project.agents.max_depth, 1);
   }],
-  ['user reference preserves root defaults and explicit profiles in their own tables', () => {
+  ['user reference preserves root defaults and keeps profiles in sibling files', () => {
     const user = readUserReference();
     assert.deepStrictEqual(Object.keys(user).sort(), [
       'agents', 'approval_policy', 'features', 'mcp_servers', 'notify',
-      'persistent_instructions', 'profiles', 'sandbox_mode', 'web_search',
+      'persistent_instructions', 'sandbox_mode', 'web_search',
     ]);
     assert.strictEqual(user.approval_policy, 'on-request');
     assert.strictEqual(user.sandbox_mode, 'workspace-write');
     assert.strictEqual(user.web_search, 'live');
     assert.deepStrictEqual(user.notify,
       ['terminal-notifier', '-title', 'Codex ECC', '-message', 'Task completed!', '-sound', 'default']);
-    assert.deepStrictEqual(user.profiles, {
-      strict: { approval_policy: 'on-request', sandbox_mode: 'read-only', web_search: 'cached' },
-      yolo: { approval_policy: 'never', sandbox_mode: 'workspace-write', web_search: 'live' },
-    });
     assert.ok(!Object.hasOwn(user, 'profile'), 'Defining a profile must not select it');
+    assert.ok(!Object.hasOwn(user, 'profiles'), 'Profiles must not live in config.toml on Codex 0.134.0+');
+    for (const [name, expected] of [
+      ['strict', { approval_policy: 'on-request', sandbox_mode: 'read-only', web_search: 'cached' }],
+      ['yolo', { approval_policy: 'never', sandbox_mode: 'workspace-write', web_search: 'live' }],
+    ]) {
+      const profile = TOML.parse(fs.readFileSync(
+        path.join(repoRoot, '.codex', `${name}.config.toml`), 'utf8'));
+      assert.deepStrictEqual(profile, expected);
+    }
   }],
   ['user reference preserves guidance, role mappings and existing MCP data', () => {
     const user = readUserReference();
@@ -233,8 +238,8 @@ const checks = [
         assert.deepStrictEqual(merged[key], custom[key]);
       }
       assert.strictEqual(merged.profiles.strict.sandbox_mode, 'workspace-write');
-      assert.strictEqual(merged.profiles.strict.approval_policy, 'on-request');
-      assert.deepStrictEqual(merged.profiles.yolo, readUserReference().profiles.yolo);
+      assert.deepStrictEqual(merged.profiles.strict.approval_policy, undefined);
+      assert.strictEqual(merged.profiles.yolo, undefined);
     });
   }],
   ['legacy merger rejects missing user reference without falling back to project config', () => {

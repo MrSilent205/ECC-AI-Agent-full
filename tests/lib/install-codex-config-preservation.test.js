@@ -449,8 +449,10 @@ test('Codex adapter preserves metadata-only planning and foreign/excluded filter
     modules: [{ id: 'platform-configs', paths: ['.codex', '.cursor', '.agents', 'scripts'] }],
   });
   assert.deepEqual(operations.map(operation => operation.sourceRelativePath),
-    ['.codex', '.codex/user-config.example.toml', 'scripts']);
+    ['.codex', '.codex/user-config.example.toml', '.codex/strict.config.toml', '.codex/yolo.config.toml', 'scripts']);
   assert.equal(operations[1].destinationPath, path.join('/example', '.codex', 'config.toml'));
+  assert.equal(operations[2].destinationPath, path.join('/example', '.codex', 'strict.config.toml'));
+  assert.equal(operations[3].destinationPath, path.join('/example', '.codex', 'yolo.config.toml'));
 });
 
 for (const action of ['reinstall', 'repair']) {
