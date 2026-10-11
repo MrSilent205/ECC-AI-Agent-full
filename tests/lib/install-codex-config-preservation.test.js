@@ -55,6 +55,8 @@ function createFixture(t) {
   });
   for (const name of SHARED_FILES) writeFile(path.join(sourceRoot, '.codex', name), TEMPLATES[name]);
   writeFile(path.join(sourceRoot, '.codex', USER_REFERENCE), TEMPLATES['config.toml']);
+  writeFile(path.join(sourceRoot, '.codex', 'strict.config.toml'), 'approval_policy = "on-request"\n');
+  writeFile(path.join(sourceRoot, '.codex', 'yolo.config.toml'), 'approval_policy = "never"\n');
   writeFile(path.join(sourceRoot, '.codex', 'config.toml'), PROJECT_CONFIG);
   writeFile(path.join(sourceRoot, 'scripts', 'independent-helper.js'), 'module.exports = "helper";\n');
   fs.mkdirSync(homeDir, { recursive: true });
@@ -454,6 +456,21 @@ test('Codex adapter preserves metadata-only planning and foreign/excluded filter
   assert.equal(operations[2].destinationPath, path.join('/example', '.codex', 'strict.config.toml'));
   assert.equal(operations[3].destinationPath, path.join('/example', '.codex', 'yolo.config.toml'));
 });
+
+for (const action of ['reinstall', 'repair']) {
+  test(`${action} preserves a user-edited named profile instead of overwriting it`, t => {
+    const fixture = createFixture(t);
+    fixture.install();
+    const profilePath = fixture.destination('strict.config.toml');
+    assert.ok(fs.existsSync(profilePath), 'expected install to seed strict.config.toml');
+    const edited = 'approval_policy = "never"\n# personal lockdown\n';
+    writeFile(profilePath, edited);
+    const result = action === 'reinstall' ? fixture.install() : lifecycleResult(fixture.repair());
+    assert.equal(fs.readFileSync(profilePath, 'utf8'), edited);
+    assertWarning(result, 'strict.config.toml');
+    assertUnmanaged(fixture, 'strict.config.toml');
+  });
+}
 
 for (const action of ['reinstall', 'repair']) {
   for (const edited of [false, true]) {

@@ -311,9 +311,14 @@ else
 fi
 
 log "Syncing Codex named profile files"
+run_or_echo mkdir -p "$CODEX_HOME"
 for profile in strict yolo; do
-  record_managed_path "$CODEX_HOME/$profile.config.toml"
-  run_or_echo cp "$REPO_ROOT/.codex/$profile.config.toml" "$CODEX_HOME/$profile.config.toml"
+  if [[ -f "$CODEX_HOME/$profile.config.toml" ]]; then
+    log "Preserving existing $profile.config.toml (user customizations win over shipped defaults)"
+  else
+    record_managed_path "$CODEX_HOME/$profile.config.toml"
+    run_or_echo cp "$REPO_ROOT/.codex/$profile.config.toml" "$CODEX_HOME/$profile.config.toml"
+  fi
 done
 
 log "Syncing Codex navigation guide"

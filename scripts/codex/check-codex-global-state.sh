@@ -111,6 +111,11 @@ if [[ -f "$CONFIG_FILE" ]]; then
   # legacy `[profiles.<name>]` tables inside config.toml.
   require_file "$CODEX_HOME/strict.config.toml" "strict profile"
   require_file "$CODEX_HOME/yolo.config.toml" "yolo profile"
+  # Legacy tables do not break the plain config, but every `codex -p` run
+  # fails while one is present — warn instead of failing the whole check.
+  if search_file '^\[profiles\.[^]]+\]' "$CONFIG_FILE"; then
+    warn "legacy [profiles.*] tables present in config.toml; move them to <name>.config.toml or codex -p keeps failing"
+  fi
 
   # Current default connector set (docs/MCP-CONNECTOR-POLICY.md): exactly
   # one connector. Former defaults (github, memory, sequential-thinking,

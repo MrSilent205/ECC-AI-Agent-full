@@ -1323,6 +1323,38 @@ if (
   passed++;
 else failed++;
 
+if (
+  test('sync seeds missing profile files but preserves user-edited profiles', () => {
+    const homeDir = createTempDir('codex-sync-profile-home-');
+    const codexDir = path.join(homeDir, '.codex');
+    const configPath = path.join(codexDir, 'config.toml');
+    const strictPath = path.join(codexDir, 'strict.config.toml');
+
+    try {
+      fs.mkdirSync(codexDir, { recursive: true });
+      fs.writeFileSync(configPath, 'persistent_instructions = ""\n');
+      fs.writeFileSync(strictPath, 'approval_policy = "never"\n# personal lockdown\n');
+
+      const syncResult = runBash(syncScript, {
+        env: makeHermeticCodexEnv(homeDir, codexDir),
+      });
+      assert.strictEqual(syncResult.status, 0, `${syncResult.stdout}\n${syncResult.stderr}`);
+
+      assert.strictEqual(
+        fs.readFileSync(strictPath, 'utf8'),
+        'approval_policy = "never"\n# personal lockdown\n'
+      );
+      const yoloPath = path.join(codexDir, 'yolo.config.toml');
+      assert.ok(fs.existsSync(yoloPath), 'expected sync to seed the missing yolo profile');
+      assert.strictEqual(TOML.parse(fs.readFileSync(yoloPath, 'utf8')).approval_policy, 'never');
+    } finally {
+      cleanup(homeDir);
+    }
+  })
+)
+  passed++;
+else failed++;
+
 console.log(`\nPassed: ${passed}`);
 console.log(`Failed: ${failed}`);
 process.exit(failed > 0 ? 1 : 0);
