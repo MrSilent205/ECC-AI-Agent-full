@@ -1,19 +1,46 @@
 """Read-only evidence discovery for explicitly selected business modules."""
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol, TypeVar
+
+
+class AuditReport(Protocol):
+    def section(self, title: str) -> None: ...
+    def ok(self, message: str) -> None: ...
+    def warn(self, message: str) -> None: ...
+    def fail(self, message: str) -> None: ...
+
+
+ReportT = TypeVar("ReportT", bound=AuditReport, contravariant=True)
+
+
+class LinkChecker(Protocol[ReportT]):
+    def __call__(
+        self, root: Path, files: list[Path], report: ReportT,
+        *, skip_templates: bool = True,
+    ) -> None: ...
 
 
 def carrier_candidates(root: Path, module: Path, name: str, mapped: str) -> list[Path]:
     directories = [module, *module.parents]
-    directories = directories[:directories.index(root)]
+    directories = [root] if module == root else directories[:directories.index(root)]
     candidates = [directory / name for directory in directories] + [root / mapped]
     return list(dict.fromkeys(candidates))
 
 
-def check_modules(root, roles, names, report, resolve_source, read_source, check_links):
+def check_modules(
+    root: Path,
+    roles: dict[str, str],
+    names: list[str],
+    report: ReportT,
+    resolve_source: Callable[[Path, Path], Path | None],
+    read_source: Callable[[Path, ReportT, str], str | None],
+    check_links: LinkChecker[ReportT],
+) -> None:
     """Use the audit's existing containment, UTF-8 and Markdown checks unchanged."""
     report.section("modules")
-    sources = set()
+    sources: set[Path] = set()
     for name in sorted(set(names)):
         requested = Path(name)
         module = resolve_source(root, root / requested)

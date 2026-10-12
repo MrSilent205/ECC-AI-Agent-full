@@ -19,10 +19,11 @@ def project(tmp_path: Path) -> Path:
 def run_audit(
     project: Path, scope: str, *, timeout: float | None = None,
     modules: tuple[str, ...] = (),
+    script: Path = SCRIPT,
 ) -> subprocess.CompletedProcess[str]:
     module_args = [argument for module in modules for argument in ("--module", module)]
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--root", str(project), "--scope", scope, *module_args],
+        [sys.executable, str(script), "--root", str(project), "--scope", scope, *module_args],
         text=True,
         capture_output=True,
         check=False,
@@ -45,6 +46,35 @@ def test_module_audit_checks_local_carriers_links_and_is_read_only(project: Path
     assert "semantic review" in result.stdout
     after = {path: path.read_bytes() for path in project.rglob("*") if path.is_file()}
     assert after == before
+
+
+@pytest.mark.parametrize("distribution", ("skills", ".agents/skills", "pi/core/skills"))
+@pytest.mark.parametrize("role,filename", (("agents", "AGENTS.md"), ("context", "CONTEXT.md")))
+@pytest.mark.parametrize("broken", (False, True))
+def test_root_module_checks_local_carrier_before_mapped_source(
+    project: Path, distribution: str, role: str, filename: str, broken: bool
+) -> None:
+    (project / ".governance").mkdir()
+    (project / "docs").mkdir()
+    (project / ".governance/docs-map.json").write_text(
+        json.dumps({"agents": "docs/rules.md", "context": "docs/glossary.md"}),
+        encoding="utf-8",
+    )
+    for mapped in ("rules", "glossary"):
+        (project / f"docs/{mapped}.md").write_text("# Shared source\n", encoding="utf-8")
+    if not broken:
+        (project / "docs/target.md").write_text("# Link target\n", encoding="utf-8")
+    (project / filename).write_text("[target](docs/target.md)\n", encoding="utf-8")
+    before = {path: path.read_bytes() for path in project.rglob("*") if path.is_file()}
+    result = run_audit(
+        project, "modules", modules=(".",),
+        script=ROOT / distribution / "docs-governance/scripts/audit-docs.py",
+    )
+    assert result.returncode == (1 if broken else 0), result.stdout + result.stderr
+    assert f"Local {role} source: '{filename}'" in result.stdout
+    assert (f"Broken Markdown link: '{filename}' -> 'docs/target.md'" in result.stdout) == broken
+    after = {path: path.read_bytes() for path in project.rglob("*") if path.is_file()}
+    assert after == before, "root module audit must remain read-only in every distribution"
 
 
 @pytest.mark.parametrize("scope", ("modules", "full"))
