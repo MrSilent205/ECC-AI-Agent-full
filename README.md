@@ -424,7 +424,7 @@ cd ECC
 | Harness | Install or setup | Notes |
 |---|---|---|
 | Cursor | `./install.sh --profile minimal --target cursor` | Project-local `.cursor/` adapter |
-| OpenCode | `npm install && npm run build:opencode && ./install.sh --profile full --target opencode --enable-hooks` | Builds the plugin payload before the full install |
+| OpenCode | `npm install && npm run build:opencode && ./install.sh --profile full --target opencode --enable-hooks` | Builds the plugin payload, then installs the v2/v1 plugin and merges ECC's agents and commands into `opencode.json` |
 | Gemini CLI | `./install.sh --profile minimal --target gemini` | Project-local `.gemini/` config |
 | Zed | `./install.sh --profile minimal --target zed` | Project-local `.zed/` adapter |
 | Antigravity | `./install.sh --profile minimal --target antigravity` | See the [Antigravity guide](docs/ANTIGRAVITY-GUIDE.md) |
@@ -1326,7 +1326,7 @@ Treat `stable`, `beta`, `experimental`, and `instruction-only` below as capabili
 | Codex | Supported native plugin | Codex marketplace plugin or repo config | Native hooks require an explicit trust decision and do not use Claude's hook profiles. The legacy sync is compatibility-only. |
 | Qoder | Supported native plugin | Local plugin directory in Qoder CLI or ZIP upload in Qoder IDE | Loads the canonical skills, agents, commands, and MCP config; only the reviewed SessionStart hook is enabled, and Node.js 18+ must be on the non-interactive PATH. |
 | Cursor | Beta project adapter | Selective installer into `.cursor/` | Agent discovery varies by Cursor build; hook events use profile-gated dispatchers, but full Claude feature parity is not claimed. |
-| OpenCode | Beta built plugin | Build plugin, then selective installer | ECC ships a subset of the catalog; connect a provider and select a model in OpenCode ([#2617](https://github.com/affaan-m/ECC/issues/2617)). |
+| OpenCode | Beta plugin (v2 and v1) | Build plugin, then selective installer | Shared hooks run through the plugin's hook bridge; connect a provider and select a model in OpenCode ([#2617](https://github.com/affaan-m/ECC/issues/2617)). |
 | GitHub Copilot Chat | Instruction-only | Checked-in instructions and prompt files | ECC hooks are not adapted. |
 | GitHub Copilot CLI | Beta project adapter | `--target copilot` places skills and adapted agents in `.github/` | ECC hooks, rules, and command shims are not installed by this target. |
 | Gemini, Zed, Antigravity, Qwen, Hermes, OpenClaw, Kimi, CodeBuddy, JoyCode | Experimental/minimal adapters | Harness-specific selective target | File placement and instruction portability are tested; full Claude feature parity is not claimed. |
@@ -1439,7 +1439,7 @@ See [affaan-m/ECC#2065](https://github.com/affaan-m/ECC/issues/2065).
 | Instructions | Native | Native `AGENTS.md` | Project rules | Plugin instructions | Native instruction file |
 | Skills | Native installed set | Native plugin set | Build-dependent/project set | Built subset | Native discovery (Copilot CLI) from `.github/skills/`, `.agents/skills/`, `.claude/skills/` |
 | Agents/delegation | Native agents | Codex multi-agent roles; Claude agent files are not installed as roles | Build-dependent project agents | Plugin agents | Copilot CLI custom agents via `.github/agents/` and `--agent` |
-| ECC hooks | Native plugin hooks | Native reviewed subset with explicit trust | Cursor hook adapter; install-path differences remain | Plugin events | Not ported; Copilot CLI has its own plugin hook system |
+| ECC hooks | Native plugin hooks | Native reviewed subset with explicit trust | Cursor hook adapter; install-path differences remain | Shared hook scripts via plugin bridge | Not ported; Copilot CLI has its own plugin hook system |
 | MCP configuration | Available, explicit activation | Native plugin manifest; legacy sync can merge TOML | Explicit project/user config | Provider/plugin config | Not supplied by ECC |
 | Parity with Claude Code | Primary reference | Partial | Partial | Partial | Partial |
 
@@ -1628,56 +1628,34 @@ The adapter writes ECC-managed files under `.zed/` and keeps BYOK/OpenRouter cre
 <details>
 <summary><strong>OpenCode support in depth</strong></summary>
 
-ECC provides a beta OpenCode plugin integration with instructions, a catalog subset, commands, custom tools, and hook events. It does not provide feature parity with Claude Code. The reference config inherits the user's OpenCode model selection instead of pinning a provider-specific model.
+ECC supports OpenCode v2 (verified on 2.0.24) and OpenCode v1 >= 1.18.29 with one plugin: agents, commands, skills, custom tools, and a hook bridge that runs ECC's shared Claude Code hook scripts (`hooks/hooks.json`) on OpenCode events. Feature parity with Claude Code is not complete (see the limits below). The reference config inherits the user's OpenCode model selection instead of pinning a provider-specific model.
+
+For installation, use the [official OpenCode instructions](https://opencode.ai/docs/), select an exact release, and verify it before execution. ECC does not attest to an audited OpenCode runtime version.
+
+#### Install
 
 ```bash
-# Run your reviewed OpenCode installation in the repository root
-opencode
+npx ecc-universal install --target opencode --profile full --enable-hooks
+opencode service restart   # the background service caches plugins and config
 ```
 
-For installation, use the [official OpenCode instructions](https://opencode.ai/docs/), select an exact release, and verify it before execution. The upstream npm package is `opencode-ai`, not `opencode`. ECC does not attest to an audited OpenCode runtime version.
+This installs into `~/.config/opencode` (or `$OPENCODE_CONFIG_DIR` / `$XDG_CONFIG_HOME/opencode`) and merges ECC's agents and commands into your existing `opencode.json`, keeping your settings and other plugins' entries. Alternatively, run `opencode` inside this repository, or load only the plugin with `"plugins": ["ecc-universal"]`.
 
-The configuration is automatically detected from `.opencode/opencode.json`.
+#### Hook support
 
-#### Hook support via plugins
-
-OpenCode's plugin system has 20+ event types:
-
-| Claude Code Hook | OpenCode Plugin Event |
-|-----------------|----------------------|
-| PreToolUse | `tool.execute.before` |
-| PostToolUse | `tool.execute.after` |
-| Stop | `session.idle` |
-| SessionStart | `session.created` |
+| Claude Code Hook | OpenCode v2 |
+|-----------------|-------------|
+| PreToolUse | `tool.hook("execute.before")`, blocks surfaced through a shell rewrite or a permission deny |
+| PostToolUse / PostToolUseFailure | `tool.hook("execute.after")` |
+| UserPromptSubmit | `session.hook("prompt")` (advisory) |
+| SessionStart | first prompt/context of a session |
+| PreCompact | `session.hook("compaction")` |
+| Stop | `session.execution.succeeded` (advisory) |
 | SessionEnd | `session.deleted` |
 
-**Additional OpenCode events**: `file.edited`, `file.watcher.updated`, `message.updated`, `lsp.client.diagnostics`, `tui.toast.show`, and more.
+Limits: no todo event in OpenCode v2, hooks receive an empty `transcript_path`, and prompt/Stop blocks cannot be enforced. `ECC_HOOK_PROFILE` and `ECC_DISABLED_HOOKS` work as in Claude Code.
 
-#### Plugin installation
-
-**Option 1: Use directly**
-```bash
-cd ECC
-opencode
-```
-
-**Option 2: Install as npm package**
-```bash
-npm install ecc-universal@2.2.3
-```
-
-Then add to your `opencode.json`:
-```json
-{
-  "plugin": ["ecc-universal"]
-}
-```
-
-That npm plugin entry enables ECC's published OpenCode plugin module (hooks/events and plugin tools). It does **not** automatically add ECC's full command/agent/instruction catalog to your project config.
-
-For the full ECC OpenCode setup, either:
-- run OpenCode inside this repository, or
-- copy the bundled `.opencode/` config assets into your project and wire the `instructions`, `agent`, and `command` entries in `opencode.json`
+ECC also works alongside [OpenCode Ensemble](https://github.com/hueyexe/opencode-ensemble) agent teams; see `.opencode/README.md`.
 
 #### Documentation
 

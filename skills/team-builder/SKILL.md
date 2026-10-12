@@ -113,6 +113,19 @@ What should they work on? (describe the task):
    - Each agent runs independently — no inter-agent communication needed
 4. If an agent fails (error, timeout, or empty output), note the failure inline (e.g., "Security Engineer: failed — [reason]") and continue with results from agents that succeeded
 
+**OpenCode with OpenCode Ensemble:** there is no Agent tool; spawn teammates
+with Ensemble's team tools instead (under OpenCode v2 they are called through
+Code Mode as `tools.team_*`):
+
+1. `team_create({ name })` once for the task.
+2. For each selected agent, `team_spawn({ name, agent, prompt })`, where
+   `agent` is an OpenCode agent name (ECC's agents, such as `code-reviewer`,
+   are registered by the ECC install) and `prompt` is the task. Pass
+   `worktree: false` for read-only agents (planner, architect, reviewers);
+   writers get their own git worktree by default.
+3. Teammates report through `team_message`; collect them with `team_results`
+   or `team_status`, then `team_shutdown` and, for writers, `team_merge`.
+
 ### Step 5: Synthesize Results
 
 Collect all outputs and present a unified report:
