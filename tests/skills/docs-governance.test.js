@@ -17,6 +17,7 @@ const MIRRORED_FILES = [
   'references/artifact-role-contract.md',
   'scripts/audit-docs.py',
   'scripts/markdown_links.py',
+  'scripts/module_audit.py',
 ];
 const ROUTED_SKILLS = [
   'ai-regression-testing',
