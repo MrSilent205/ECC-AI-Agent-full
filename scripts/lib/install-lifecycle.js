@@ -14,6 +14,8 @@ const { withOpenCodeInstallLocks } = require('./install/opencode-install-lock');
 const { isCodexUserConfig } = require('./install/codex-user-config');
 const {
   getRecordedHookConsent,
+  isOpenCodeHomeConfigMerge,
+  stripLegacyOpenCodePluginRegistration,
   withHookConsent,
 } = require('./install/hook-consent');
 const {
@@ -309,7 +311,12 @@ function buildRecordedStatePreview(state, context, operations) {
 }
 
 function shouldRepairFromRecordedOperations(state) {
-  return getManagedOperations(state).some(operation => operation.kind !== 'copy-file');
+  // OpenCode's home-config merge is a projection of the manifest template, so
+  // it does not need recorded-operation replay; re-resolving the manifest
+  // keeps repair able to pick up upgraded sources.
+  return getManagedOperations(state).some(operation => (
+    operation.kind !== 'copy-file' && !isOpenCodeHomeConfigMerge(operation)
+  ));
 }
 
 function executeRepairOperation(
@@ -363,11 +370,14 @@ function executeRepairOperation(
     }
 
     const existingDestination = getContainedExistingPath(operation.destinationPath, trustedRoot, 'repair');
-    const currentValue = existingDestination
+    const existingValue = existingDestination
       ? readJsonNoFollow(
         getManagedDestination(existingDestination, trustedRoot, 'repair').managedPath
       )
       : {};
+    const currentValue = isOpenCodeHomeConfigMerge(operation)
+      ? stripLegacyOpenCodePluginRegistration(existingValue)
+      : existingValue;
     const mergedValue = deepMergeJson(currentValue, payload);
 
     writeContainedFile(operation.destinationPath, formatJson(mergedValue), trustedRoot, 'repair');

@@ -128,7 +128,7 @@ function runTests() {
   })) passed++; else failed++;
 
   if (test('OpenCode auto-discovered entrypoints require selected runtime and consent', () => {
-    const entrypoints = ['.opencode/plugins/ecc-hooks.ts', '.opencode/plugins/index.ts'];
+    const entrypoints = ['.opencode/plugins/ecc.ts', '.opencode/plugins/legacy-copy.ts'];
     const operations = entrypoints.map(sourceRelativePath => ({
       kind: 'copy-file', moduleId: 'platform-configs', sourceRelativePath,
     }));
@@ -149,7 +149,7 @@ function runTests() {
     assert.throws(() => assertHookConsentReady(pending), /automatic hook runtime/);
     const enabled = withHookConsent(selected, 'enabled');
     for (const operation of [...enabled.operations, ...enabled.statePreview.operations]) {
-      assert.strictEqual(operation.contentTransform, operation.sourceRelativePath.endsWith('/index.ts') ? 'opencode-disable-plugin-entrypoint' : undefined);
+      assert.strictEqual(operation.contentTransform, undefined, 'Consented runtime keeps every entrypoint live');
     }
     assert.doesNotThrow(() => assertHookConsentReady(enabled));
     const declined = withHookConsent(selected, 'declined');

@@ -9,7 +9,7 @@ const { createFileSystemLoader } = require('./helpers/load-with-file-system');
 const fileSystem = { ...fs };
 const load = createFileSystemLoader(fileSystem);
 const { applyInstallPlan } = load(require.resolve('../../scripts/lib/install/apply'));
-const { withHookConsent } = require('../../scripts/lib/install/hook-consent');
+const { withHookConsent, getDisabledOpenCodePluginContent } = require('../../scripts/lib/install/hook-consent');
 const { createInstallState, readInstallState, writeInstallState } = require('../../scripts/lib/install-state');
 const { buildDoctorReport, repairInstalledStates } = load(require.resolve('../../scripts/lib/install-lifecycle'));
 
@@ -88,6 +88,10 @@ function fixture(callback, enabled = false) {
     fs.mkdirSync(path.join(dist, 'plugins'), { recursive: true });
     fs.mkdirSync(path.join(dist, 'tools'), { recursive: true });
     fs.writeFileSync(path.join(dist, 'index.js'), 'module.exports = {};\n');
+    // Plugin sources the opencode target validates before planning.
+    fs.writeFileSync(path.join(sourceRoot, '.opencode', 'plugins', 'ecc.ts'), 'export default { id: "ecc", setup() {} };\n');
+    fs.mkdirSync(path.join(sourceRoot, '.opencode', 'ecc', 'bridge'), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, '.opencode', 'ecc', 'bridge', 'hook-table.generated.json'), '{"rows":[]}\n');
     const installStatePath = path.join(targetRoot, 'ecc-install-state.json');
     const state = createInstallState({
       adapter, targetRoot, installStatePath,
@@ -288,7 +292,7 @@ function runTests() {
     assert.strictEqual(result.status, 'repaired', result.error);
     assert.strictEqual(result.stateRefreshed, true);
     assert.strictEqual(fs.readFileSync(path.join(value.targetRoot, 'plugins/ecc-hooks.ts'), 'utf8'),
-      'export default async () => ({});\n');
+      getDisabledOpenCodePluginContent());
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(value.targetRoot, 'opencode.json'))),
       { plugin: [], userSetting: true });
     assert.strictEqual(fs.existsSync(`${value.installStatePath}.ecc.lock`), false);
@@ -310,7 +314,7 @@ function runTests() {
           assert.ok(!operations.some(operation => operation.destinationPath === destination), 'Do not adopt a user config');
         }
         assert.strictEqual(fs.readFileSync(path.join(value.targetRoot, 'plugins/ecc-hooks.ts'), 'utf8'),
-          'export default async () => ({});\n');
+          getDisabledOpenCodePluginContent());
         assert.strictEqual(fs.existsSync(`${value.installStatePath}.ecc.lock`), false);
       }));
     }
@@ -350,7 +354,7 @@ function runTests() {
       // must never adopt the preserved user config after this refusal.
       const checkpoint = readInstallState(value.installStatePath);
       assert.deepStrictEqual(checkpoint.operations.map(operation => operation.destinationPath), [plugin]);
-      assert.strictEqual(fs.readFileSync(plugin, 'utf8'), 'export default async () => ({});\n');
+      assert.strictEqual(fs.readFileSync(plugin, 'utf8'), getDisabledOpenCodePluginContent());
       assert.strictEqual(checkpoint.operations[0].contentSha256, sha256(fs.readFileSync(plugin)));
       assert.strictEqual(fs.existsSync(`${value.installStatePath}.ecc.lock`), false);
     }));
@@ -457,7 +461,7 @@ function runTests() {
       test(`fresh ${consent || 'default'} apply refuses the unrecorded historical ${legacy.name}`, () => fixture(value => {
         assert.strictEqual(sha256(legacy.content), legacy.sha256, 'Preserve exact public-source fixture bytes');
         assert.notStrictEqual(sha256(fs.readFileSync(path.join(value.sourceRoot, '.opencode/plugins/ecc-hooks.ts'))), legacy.sha256);
-        assert.notStrictEqual(sha256(fs.readFileSync(path.join(REPO_ROOT, '.opencode/plugins/index.ts'))), legacy.sha256);
+        assert.notStrictEqual(sha256(fs.readFileSync(path.join(REPO_ROOT, '.opencode/plugins/ecc.ts'))), legacy.sha256);
         fs.unlinkSync(value.installStatePath);
         for (const operation of value.basePlan.operations) fs.unlinkSync(operation.destinationPath);
         const alias = path.join(value.targetRoot, 'plugins', 'index.js');
@@ -533,7 +537,7 @@ function runTests() {
         operations: [...value.basePlan.operations, operation] }, consent);
       assert.strictEqual(applyInstallPlan(plan).applied, true);
       assert.strictEqual(fs.readFileSync(destinationPath, 'utf8'), consent === 'enabled'
-        ? content : 'export default async () => ({});\n');
+        ? content : getDisabledOpenCodePluginContent());
     }));
   }
   test('nested package metadata fails before writing and never receives a JavaScript tombstone', () => fixture(value => {

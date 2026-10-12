@@ -4,6 +4,7 @@ const { stripPluginNamespace } = require('./plugin-namespace');
 const { adaptAntigravityAgent } = require('./antigravity-agent');
 const { adaptCopilotAgent } = require('./copilot-agent');
 const { disableOpenCodeHookPluginRegistration, getDisabledOpenCodePluginContent } = require('./hook-consent');
+const { projectOpenCodeHomeConfig } = require('./opencode-home-config');
 
 function rewriteCopilotWorkflowPaths(content, sourceRelativePath) {
   if (!/\.md$/i.test(sourceRelativePath)) return content;
@@ -38,6 +39,9 @@ function transformInstallContent(operation, content) {
   }
   if (operation.contentTransform === 'opencode-disable-plugin-entrypoint') {
     return getDisabledOpenCodePluginContent();
+  }
+  if (operation.contentTransform === 'opencode-home-config') {
+    return projectOpenCodeHomeConfig(content);
   }
   if (operation.contentTransform === 'opencode-home-skills-path') {
     const config = JSON.parse(content);

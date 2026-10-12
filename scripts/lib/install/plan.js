@@ -8,6 +8,7 @@ const { resolveInstallPlan } = require('../install-manifests');
 const { getInstallTargetAdapter } = require('../install-targets/registry');
 const { resolveInvocationEnvironment } = require('../invocation-environment');
 const { disableUnselectedOpenCodeHooks } = require('./hook-consent');
+const { OPENCODE_HOME_CONFIG_TRANSFORM, projectOpenCodeHomeConfig } = require('./opencode-home-config');
 const { readHooksConfig } = require('../hooks-config');
 const {
   materializeManagedHooks,
@@ -137,6 +138,32 @@ function readJsonObject(filePath, label) {
   return parsed;
 }
 
+/**
+ * Read a merge-json payload, applying the operation's content transform first
+ * so targets can merge a projection of a shared template (e.g. OpenCode home
+ * installs merge only ECC's agents and commands into the user's config).
+ */
+function readMergePayload(sourceRoot, operation) {
+  const sourcePath = path.join(sourceRoot, operation.sourceRelativePath);
+  if (!operation.contentTransform) {
+    return readJsonObject(sourcePath, operation.sourceRelativePath);
+  }
+  if (operation.contentTransform !== OPENCODE_HOME_CONFIG_TRANSFORM) {
+    throw new Error(`Unsupported merge-json content transform: ${operation.contentTransform}`);
+  }
+  const transformed = projectOpenCodeHomeConfig(fs.readFileSync(sourcePath, 'utf8'));
+  let parsed;
+  try {
+    parsed = JSON.parse(transformed);
+  } catch (error) {
+    throw new Error(`Failed to parse transformed ${operation.sourceRelativePath}: ${error.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Invalid transformed ${operation.sourceRelativePath}: expected a JSON object`);
+  }
+  return parsed;
+}
+
 function materializeClaudeSettingsOperation(sourceRoot, operation) {
   const sourcePath = path.join(sourceRoot, operation.sourceRelativePath);
   if (!fs.existsSync(sourcePath)) {
@@ -165,6 +192,10 @@ function materializeScaffoldOperation(sourceRoot, operation) {
   }
 
   if (operation.kind === 'merge-json') {
+    // Like copies, an optional source that is absent from this tree plans no write.
+    if (operation.contentTransform && !fs.existsSync(path.join(sourceRoot, operation.sourceRelativePath))) {
+      return [];
+    }
     return [
       {
         kind: 'merge-json',
@@ -174,7 +205,8 @@ function materializeScaffoldOperation(sourceRoot, operation) {
         strategy: operation.strategy || 'merge-json',
         ownership: operation.ownership || 'managed',
         scaffoldOnly: Object.hasOwn(operation, 'scaffoldOnly') ? operation.scaffoldOnly : false,
-        mergePayload: readJsonObject(path.join(sourceRoot, operation.sourceRelativePath), operation.sourceRelativePath)
+        ...(operation.contentTransform ? { contentTransform: operation.contentTransform } : {}),
+        mergePayload: readMergePayload(sourceRoot, operation)
       }
     ];
   }

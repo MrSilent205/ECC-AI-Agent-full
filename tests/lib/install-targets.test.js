@@ -1298,14 +1298,13 @@ function runTests() {
       const distDir = path.join(repoRoot, '.opencode', 'dist');
       fs.mkdirSync(distDir, { recursive: true });
       fs.writeFileSync(path.join(distDir, 'index.js'), '// stub\n');
-      // Intentionally omit dist/plugins and dist/tools.
+      // Intentionally omit dist/plugins.
 
       const issues = adapter.validate({ homeDir: '/Users/example', repoRoot });
       assert.strictEqual(issues.length, 1, 'Should surface a single validation issue for partial builds');
       assert.strictEqual(issues[0].code, 'opencode-plugin-not-built');
       const missing = issues[0].missingRelativePaths.map(p => p.replace(/\\/g, '/'));
       assert.ok(missing.includes('.opencode/dist/plugins'), 'Missing list should include dist/plugins');
-      assert.ok(missing.includes('.opencode/dist/tools'), 'Missing list should include dist/tools');
       assert.ok(!missing.includes('.opencode/dist/index.js'), 'Missing list should not include the present entry');
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
@@ -1328,7 +1327,6 @@ function runTests() {
       assert.strictEqual(issues[0].code, 'opencode-plugin-not-built');
       const missing = issues[0].missingRelativePaths.map(p => p.replace(/\\/g, '/'));
       assert.ok(missing.includes('.opencode/dist/plugins'), 'Should flag plugins file as wrong type');
-      assert.ok(missing.includes('.opencode/dist/tools'), 'Should flag tools file as wrong type');
       assert.ok(!missing.includes('.opencode/dist/index.js'), 'Should not flag index.js when it is correctly a file');
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
@@ -1359,7 +1357,6 @@ function runTests() {
       const missing = issues[0].missingRelativePaths.map(p => p.replace(/\\/g, '/'));
       assert.ok(missing.includes('.opencode/dist/index.js'), 'ENOTDIR target should be reported as missing');
       assert.ok(missing.includes('.opencode/dist/plugins'), 'Sibling artefacts under the bad path should be reported');
-      assert.ok(missing.includes('.opencode/dist/tools'), 'Sibling artefacts under the bad path should be reported');
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
@@ -1371,8 +1368,16 @@ function runTests() {
     try {
       const distDir = path.join(repoRoot, '.opencode', 'dist');
       fs.mkdirSync(path.join(distDir, 'plugins'), { recursive: true });
-      fs.mkdirSync(path.join(distDir, 'tools'), { recursive: true });
       fs.writeFileSync(path.join(distDir, 'index.js'), '// stub\n');
+      const sourceDir = path.join(repoRoot, '.opencode');
+      fs.mkdirSync(path.join(sourceDir, 'plugins'), { recursive: true });
+      fs.mkdirSync(path.join(sourceDir, 'ecc', 'bridge'), { recursive: true });
+      fs.writeFileSync(path.join(sourceDir, 'plugins', 'ecc.ts'), '// stub\n');
+
+      const partial = adapter.validate({ homeDir: '/Users/example', repoRoot });
+      assert.deepStrictEqual(partial.map(issue => [issue.severity, issue.code]), [['warning', 'opencode-plugin-source-missing']],
+        'A missing plugin source is a non-blocking warning');
+      fs.writeFileSync(path.join(sourceDir, 'ecc', 'bridge', 'hook-table.generated.json'), '{"rows":[]}\n');
 
       const issues = adapter.validate({ homeDir: '/Users/example', repoRoot });
       assert.deepStrictEqual(issues, [], 'Should not surface validation issues when plugin is built');
