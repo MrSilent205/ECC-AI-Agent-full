@@ -4,7 +4,8 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { resolveInstallPlan } = require('../../scripts/lib/install-manifests');
+const { listInstallComponents, resolveInstallPlan } = require('../../scripts/lib/install-manifests');
+const { createManifestInstallPlan } = require('../../scripts/lib/install-executor');
 
 const ROOT = path.resolve(__dirname, '../..');
 const OWNERS = [
@@ -34,6 +35,43 @@ for (const target of ['claude', 'codex']) {
     for (const owner of OWNERS) {
       assert.ok(paths.has(`skills/${owner}`), `missing ${owner}`);
     }
+  });
+}
+
+for (const target of ['claude', 'claude-project', 'cursor', 'antigravity', 'codex',
+  'opencode', 'codebuddy', 'joycode', 'qwen', 'zed']) {
+  test(`advertised ${target} capability produces copies of every delegated owner`, () => {
+    assert.ok(listInstallComponents({ repoRoot: ROOT, target }).some(
+      component => component.id === 'capability:module-governance'
+    ));
+    const plan = createManifestInstallPlan({
+      sourceRoot: ROOT, target, homeDir: '/private/tmp/ecc-module-plan-preview',
+      projectRoot: '/private/tmp/ecc-module-plan-preview', profileId: 'minimal',
+      includeComponentIds: ['capability:module-governance'],
+    });
+    for (const owner of OWNERS) {
+      assert.ok(plan.operations.some(operation => operation.kind === 'copy-file'
+        && operation.sourceRelativePath.endsWith(`skills/${owner}/SKILL.md`)),
+      `missing ${owner} copy on ${target}`);
+    }
+  });
+}
+
+for (const target of ['hermes', 'openclaw', 'kimi', 'adal', 'copilot']) {
+  test(`does not advertise the incomplete ${target} dependency closure`, () => {
+    assert.ok(!listInstallComponents({ repoRoot: ROOT, target }).some(
+      component => component.id === 'capability:module-governance'
+    ), `module governance is not installable on ${target}`);
+    const plan = createManifestInstallPlan({
+      sourceRoot: ROOT, target, homeDir: '/private/tmp/ecc-module-plan-preview',
+      projectRoot: '/private/tmp/ecc-module-plan-preview', profileId: 'minimal',
+      includeComponentIds: ['capability:module-governance'],
+    });
+    assert.ok(plan.skippedModuleIds.includes('documentation-module-governance'));
+    assert.ok(!plan.selectedModuleIds.includes('documentation-module-governance'));
+    // agents-core may copy Codex metadata; that is not this capability's installation.
+    assert.ok(!plan.operations.some(operation => operation.moduleId
+      === 'documentation-module-governance'));
   });
 }
 

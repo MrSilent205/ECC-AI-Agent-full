@@ -1406,11 +1406,7 @@
         "codebuddy",
         "joycode",
         "qwen",
-        "zed",
-        "hermes",
-        "openclaw",
-        "kimi",
-        "adal"
+        "zed"
       ],
       "dependencies": [
         "documentation-context",
