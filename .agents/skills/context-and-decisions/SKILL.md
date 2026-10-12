@@ -10,7 +10,7 @@ Govern “what these business terms mean” separately from “why this option w
 
 ## Domain Context Artifact: Domain Language Only
 
-When terms require repeated explanation, one term has multiple meanings, or unclear language causes module-boundary errors, first reuse the repository's existing glossary/domain-model document or the `context` role in `.governance/docs-map.json`. If an existing context map identifies separate business contexts, follow its links to the relevant glossary; ask when the topic's owner is unclear. Different contexts may legitimately use the same word differently. Do not create a glossary for every directory or impose one meaning across unrelated contexts. Only when no equivalent exists and a term has been resolved should you lazily create the default `CONTEXT.md` from `templates/context.example.md`, within the user's authorized documentation scope.
+When terms require repeated explanation, one term has multiple meanings, or unclear language causes module-boundary errors, first reuse the repository's existing glossary/domain-model document or the `context` role in `.governance/docs-map.json`. If an existing context map identifies separate business contexts, follow its links to the relevant glossary; ask when the topic's owner is unclear. Different contexts may legitimately use the same word differently. Do not create a glossary for every directory or impose one meaning across unrelated contexts. Only when no equivalent exists and a term has been resolved should you propose the default `CONTEXT.md` from `templates/context.example.md`. Obtain the user's explicit approval to create that new artifact before writing it, and stay within the authorized documentation scope. General permission to update documentation does not itself approve a new artifact; editing an existing mapped glossary within the authorized scope does not require a new-artifact approval.
 
 Record only:
 
@@ -58,7 +58,7 @@ Use this skill when stable domain language needs one evidence-backed home, or wh
 
 ## How It Works
 
-1. Reuse the mapped context or glossary artifact when one exists; create `CONTEXT.md` only when no equivalent source of truth is available.
+1. Reuse the mapped context or glossary artifact when one exists; create `CONTEXT.md` only when no equivalent source of truth is available and the user has explicitly approved creating that new artifact.
 2. Challenge conflicting language, probe concrete edge cases, and cross-check claims against code and contracts before recording confirmed definitions and relationships. Keep unresolved interpretations explicit without mixing in implementation or task state.
 3. Route durable tradeoffs to `architecture-decision-records` and link the resulting ADR instead of copying its rationale into context documents.
 4. Keep schedules, blockers, and execution status in the existing issue tracker.

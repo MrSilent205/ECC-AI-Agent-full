@@ -1,6 +1,6 @@
 # CONTEXT.md — Domain Language
 
-> Create only after the first term is resolved and documentation edits are authorized. Reuse an existing glossary and its format instead of creating a duplicate. Omit sections without content. Do not include implementation, status, scheduling, or decision rationale.
+> Create only after the first term is resolved, no equivalent glossary exists, and the user has explicitly approved creating this new artifact within the authorized documentation scope. General documentation-update permission alone is not creation approval. Reuse an existing glossary and its format instead of creating a duplicate; authorized edits to that existing glossary do not need a new-artifact approval. Omit sections without content. Do not include implementation, status, scheduling, or decision rationale.
 
 {One or two sentences identifying the business context this vocabulary describes.}
 
