@@ -5,23 +5,25 @@
  * Supports common coverage report formats.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
+import { defineTool, s } from "./schema.ts"
 import * as path from "path"
 import * as fs from "fs"
 
-const checkCoverageTool: ToolDefinition = tool({
+const checkCoverageTool = defineTool({
+  name: "check_coverage",
+  v1Name: "check-coverage",
   description:
     "Check test coverage against a threshold and identify files with low coverage. Reads coverage reports from common locations.",
   args: {
-    threshold: tool.schema
+    threshold: s
       .number()
       .optional()
       .describe("Minimum coverage percentage required (default: 80)"),
-    showUncovered: tool.schema
+    showUncovered: s
       .boolean()
       .optional()
       .describe("Show list of uncovered files (default: true)"),
-    format: tool.schema
+    format: s
       .enum(["summary", "detailed", "json"])
       .optional()
       .describe("Output format (default: summary)"),

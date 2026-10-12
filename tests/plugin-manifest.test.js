@@ -34,7 +34,7 @@ const zhCnReadmePath = path.join(repoRoot, 'docs', 'zh-CN', 'README.md');
 const selectiveInstallArchitecturePath = path.join(repoRoot, 'docs', 'SELECTIVE-INSTALL-ARCHITECTURE.md');
 const opencodePackageJsonPath = path.join(repoRoot, '.opencode', 'package.json');
 const opencodePackageLockPath = path.join(repoRoot, '.opencode', 'package-lock.json');
-const opencodeHooksPluginPath = path.join(repoRoot, '.opencode', 'plugins', 'ecc-hooks.ts');
+const opencodePluginSourceDirs = [path.join(repoRoot, '.opencode', 'plugins'), path.join(repoRoot, '.opencode', 'ecc')];
 const hooksReadmePath = path.join(repoRoot, 'hooks', 'README.md');
 const semverPattern = '[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?';
 const installPrPublishedBaseline = '2.1.0';
@@ -171,11 +171,23 @@ test('docs/SELECTIVE-INSTALL-ARCHITECTURE.md repoVersion example matches package
   assert.strictEqual(match[1], expectedVersion);
 });
 
-test('.opencode/plugins/ecc-hooks.ts active plugin banner matches package.json', () => {
-  const source = fs.readFileSync(opencodeHooksPluginPath, 'utf8');
-  const match = source.match(new RegExp(`## Active Plugin: ECC v(${semverPattern})`));
-  assert.ok(match, 'Expected .opencode/plugins/ecc-hooks.ts to declare an active plugin banner');
-  assert.strictEqual(match[1], expectedVersion);
+test('OpenCode plugin sources read the ECC version at runtime instead of hard-coding it', () => {
+  const files = [];
+  const walk = dir => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.ts$/.test(entry.name)) files.push(full);
+    }
+  };
+  opencodePluginSourceDirs.forEach(walk);
+  assert.ok(files.length > 0, 'Expected OpenCode plugin sources');
+  for (const file of files) {
+    const source = fs.readFileSync(file, 'utf8');
+    assert.ok(!new RegExp(`ECC v${semverPattern}`).test(source), `${path.relative(repoRoot, file)} hard-codes an ECC version`);
+  }
+  // The plugin reads VERSION (or package.json) from the ECC root at runtime.
+  assert.strictEqual(fs.readFileSync(path.join(repoRoot, 'VERSION'), 'utf8').trim(), expectedVersion);
 });
 
 test('docs/pt-BR/README.md latest release heading matches package.json', () => {

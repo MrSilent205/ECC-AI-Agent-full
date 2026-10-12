@@ -10,6 +10,13 @@ const distDir = path.join(opencodeDir, "dist")
 
 fs.rmSync(distDir, { recursive: true, force: true })
 
+// The bridge's hook table is generated from hooks/hooks.json; refresh it so the
+// compiled payload never ships a stale copy.
+execFileSync(process.execPath, [path.join(rootDir, "scripts", "build-opencode-hook-table.js")], {
+  cwd: rootDir,
+  stdio: ["ignore", "ignore", "inherit"],
+})
+
 let tscEntrypoint
 
 try {

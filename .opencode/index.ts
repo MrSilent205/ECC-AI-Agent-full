@@ -1,9 +1,13 @@
 /**
  * ECC Plugin for OpenCode
  *
- * This package provides the published ECC OpenCode plugin module:
- * - Plugin hooks (auto-format, TypeScript check, console.log warning, env injection, etc.)
- * - Custom tools (run-tests, check-coverage, security-audit, format-code, lint-check, git-summary)
+ * This package provides the published ECC OpenCode plugin module, loadable by
+ * OpenCode v2 (`{ id, setup }`) and v1 >= 1.18.29 (`server`):
+ * - A hook bridge that runs ECC's shared Claude Code hook scripts
+ *   (hooks/hooks.json) on OpenCode tool, prompt, session and compaction events
+ * - Custom tools (ecc_run_tests, ecc_check_coverage, ecc_security_audit,
+ *   ecc_format_code, ecc_lint_check, ecc_git_summary, ecc_changed_files,
+ *   ecc_dependency_analyzer)
  * - Bundled reference config/assets for the wider ECC OpenCode setup
  *
  * Usage:
@@ -16,7 +20,7 @@
  * Then add to your opencode.json:
  * ```json
  * {
- *   "plugin": ["ecc-universal"]
+ *   "plugins": ["ecc-universal"]
  * }
  * ```
  *
@@ -34,7 +38,6 @@
  * @packageDocumentation
  */
 
-// Export the main plugin
-// opencode's legacy plugin loader iterates every module export and throws if
-// any is not a plugin function, so only the plugin function may be exported.
-export { default } from "./plugins/index.ts"
+// Only the default export: OpenCode v1's loader throws on any export that is
+// not a plugin, and v2 reads only `default`.
+export { default } from "./plugins/ecc.ts"

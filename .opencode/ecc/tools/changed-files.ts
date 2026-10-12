@@ -1,5 +1,5 @@
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
-import type { ChangeType, TreeNode } from "../plugins/lib/changed-files-store.ts"
+import { defineTool, s } from "./schema.ts"
+import type { ChangeType, TreeNode } from "../lib/changed-files-store.ts"
 
 const INDICATORS: Record<ChangeType, string> = {
   added: "+",
@@ -21,23 +21,22 @@ function renderTree(nodes: TreeNode[], indent: string): string {
 }
 
 // Loaded lazily (instead of via a top-level import) so that a missing or
-// partially-installed `~/.opencode/plugins` directory only breaks this one
-// tool when it's actually invoked, rather than throwing during module
-// evaluation. `tools/index.ts` re-exports every tool from a single barrel
-// file, so a static import failure here previously took down the entire
-// tools module -- and with it, the whole OpenCode session -- on the very
-// first tool-loading pass (see #2530).
-type ChangedFilesStore = typeof import("../plugins/lib/changed-files-store.ts")
+// partially-installed `ecc/lib` directory only breaks this one tool when it's
+// actually invoked, rather than throwing during module evaluation. The plugin
+// entry imports every tool through one list, so a static import failure here
+// would take down the whole plugin -- and with it the OpenCode session (see
+// #2530). The bridge imports the same module URL, so both share one store.
+type ChangedFilesStore = typeof import("../lib/changed-files-store.ts")
 let changedFilesStorePromise: Promise<ChangedFilesStore> | undefined
 
 async function loadChangedFilesStore(): Promise<ChangedFilesStore> {
   if (!changedFilesStorePromise) {
-    changedFilesStorePromise = import("../plugins/lib/changed-files-store.ts").catch(() => {
+    changedFilesStorePromise = import("../lib/changed-files-store.ts").catch(() => {
       changedFilesStorePromise = undefined
       throw new Error(
         "changed-files tool: could not load the changed-files store. " +
-          "This usually means the ~/.opencode/plugins directory is missing or incomplete " +
-          "(an interrupted or partial ECC install can leave tools/ populated without plugins/). " +
+          "This usually means the ECC install under your OpenCode config is incomplete " +
+          "(an interrupted or partial install can leave ecc/tools populated without ecc/lib). " +
           "Run `node scripts/repair.js --target opencode` (or `ecc repair --target opencode`) " +
           "from the ECC repo to restore the missing files."
       )
@@ -46,15 +45,17 @@ async function loadChangedFilesStore(): Promise<ChangedFilesStore> {
   return changedFilesStorePromise
 }
 
-const changedFilesTool: ToolDefinition = tool({
+const changedFilesTool = defineTool({
+  name: "changed_files",
+  v1Name: "changed-files",
   description:
     "List files changed by agents in this session as a navigable tree. Shows added (+), modified (~), and deleted (-) indicators. Use filter to show only specific change types. Returns paths for git diff.",
   args: {
-    filter: tool.schema
+    filter: s
       .enum(["all", "added", "modified", "deleted"])
       .optional()
       .describe("Filter by change type (default: all)"),
-    format: tool.schema
+    format: s
       .enum(["tree", "json"])
       .optional()
       .describe("Output format: tree for terminal display, json for structured data (default: tree)"),

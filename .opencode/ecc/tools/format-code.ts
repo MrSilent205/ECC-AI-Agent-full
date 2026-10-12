@@ -6,7 +6,7 @@
  * Supports cross-platform command generation.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
+import { defineTool, s } from "./schema.ts"
 import * as path from "path"
 import * as fs from "fs"
 
@@ -21,12 +21,14 @@ interface FormatResult {
   error?: string
 }
 
-const formatCodeTool: ToolDefinition = tool({
+const formatCodeTool = defineTool({
+  name: "format_code",
+  v1Name: "format-code",
   description:
     "Detect formatter for a file and return the exact command to run (Biome, Prettier, Black, gofmt, rustfmt, swift-format). Supports cross-platform command generation.",
   args: {
-    filePath: tool.schema.string().describe("Path to the file to format"),
-    formatter: tool.schema
+    filePath: s.string().describe("Path to the file to format"),
+    formatter: s
       .enum(["biome", "prettier", "black", "gofmt", "rustfmt", "swift-format"])
       .optional()
       .describe("Optional formatter override"),

@@ -5,7 +5,7 @@
  * and unused dependencies. Supports multiple package managers.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
+import { defineTool, s } from "./schema.ts"
 import * as path from "path"
 import * as fs from "fs"
 
@@ -36,19 +36,21 @@ interface AnalysisResult {
   error?: string
 }
 
-const dependencyAnalyzerTool: ToolDefinition = tool({
+const dependencyAnalyzerTool = defineTool({
+  name: "dependency_analyzer",
+  v1Name: "dependency-analyzer",
   description:
     "Analyze project dependencies for outdated packages, security vulnerabilities, and unused dependencies. Supports npm, pnpm, yarn, and bun.",
   args: {
-    type: tool.schema
+    type: s
       .enum(["all", "outdated", "security", "unused"])
       .optional()
       .describe("Type of analysis to run (default: all)"),
-    fix: tool.schema
+    fix: s
       .boolean()
       .optional()
       .describe("Attempt to fix issues automatically (default: false)"),
-    depth: tool.schema
+    depth: s
       .number()
       .optional()
       .describe("Depth of dependency analysis (default: 1)"),

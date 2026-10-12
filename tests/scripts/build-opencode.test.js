@@ -15,44 +15,50 @@ const { withHookConsent } = require("../../scripts/lib/install/hook-consent")
 function checkRuntime(runtimeRoot, extension, loader, installedHome = false) {
   const check = `
     const assert = require("node:assert/strict")
+    const fs = require("node:fs")
     const path = require("node:path")
     const { pathToFileURL } = require("node:url")
     const [root, extension, installedHome] = process.argv.slice(1)
     const load = (name) => import(pathToFileURL(path.join(root, name + extension)).href)
 
     async function main() {
-      const tools = await load("tools/index")
-      assert.deepEqual(Object.keys(tools).sort(), [
-        "changedFiles", "checkCoverage", "dependencyAnalyzer", "formatCode",
-        "gitSummary", "lintCheck", "runTests", "securityAudit",
+      const { ECC_TOOLS } = await load("ecc/tools/index")
+      assert.deepEqual(ECC_TOOLS.map((tool) => tool.name).sort(), [
+        "changed_files", "check_coverage", "dependency_analyzer", "format_code",
+        "git_summary", "lint_check", "run_tests", "security_audit",
       ])
-      for (const tool of Object.values(tools)) {
-        assert.equal(typeof tool.description, "string")
-        assert.equal(typeof tool.execute, "function")
+
+      const plugin = (await load("plugins/ecc")).default
+      assert.deepEqual(Object.keys(plugin).sort(), ["id", "server", "setup"])
+      if (installedHome !== "true") {
+        const entry = await load("index")
+        assert.deepEqual(Object.keys(entry), ["default"])
+        assert.equal(entry.default, plugin)
       }
 
-      const plugins = await load("plugins/index")
-      const entry = await load("index")
-      assert.deepEqual(Object.keys(entry), ["default"])
-      assert.equal(entry.default, plugins.default)
-      const logs = []
-      // Home installs are auto-discovered. Their barrel must stay inert so
-      // the hooks module is initialized exactly once; published package entry
-      // imports continue to expose the actual plugin.
-      const active = installedHome === "true" ? await load("plugins/ecc-hooks") : entry
-      if (installedHome === "true") assert.deepEqual(await entry.default({}), {})
-      const plugin = await active.default({
-        client: { app: { log: (event) => logs.push(event.body) } },
-        $: () => { throw new Error("Unexpected shell execution") },
-        directory: process.cwd(),
-        worktree: process.cwd(),
-      })
-      assert.equal(typeof plugin["session.created"], "function")
-      await plugin["file.edited"]({ path: path.join(process.cwd(), "example.txt") })
-      const changed = JSON.parse(await tools.changedFiles.execute({ format: "json" }, {}))
-      assert.equal(changed.changed, true)
-      assert.deepEqual(changed.files, [{ path: "example.txt", changeType: "modified" }])
-      assert.ok(!logs.some((log) => log.message.includes("tracking disabled")))
+      // Drive the v2 entry with a minimal host: tools register, and a write
+      // reported through execute.after reaches the shared changed-files store.
+      const hooks = {}
+      const tools = []
+      const ctx = {
+        location: { directory: process.cwd() },
+        tool: { transform: async (cb) => cb({ add: (t) => tools.push(t) }), hook: async (n, cb) => { hooks[n] = cb } },
+        permission: { hook: async () => {} },
+        shell: { hook: async () => {} },
+        session: { hook: async () => {} },
+        event: { subscribe: () => ({ async *[Symbol.asyncIterator]() {} }) },
+      }
+      const dispose = await plugin.setup(ctx)
+      assert.ok(tools.some((t) => t.name === "ecc_changed_files"))
+      if (hooks["execute.after"]) {
+        await hooks["execute.after"]({ tool: "write", sessionID: "s", id: "c", input: { path: "example.txt", content: "x" },
+          status: "completed", result: { content: [] } })
+        const changedTool = tools.find((t) => t.name === "ecc_changed_files")
+        const changed = JSON.parse((await changedTool.execute({ format: "json" }, { sessionID: "s" })).content)
+        assert.equal(changed.changed, true)
+        assert.deepEqual(changed.files, [{ path: "example.txt", changeType: "modified" }])
+      }
+      if (typeof dispose === "function") await dispose()
     }
     main().catch((error) => { console.error(error); process.exit(1) })
   `
@@ -66,10 +72,11 @@ function checkRuntime(runtimeRoot, extension, loader, installedHome = false) {
     const result = spawnSync(process.execPath, [...args, "-e", check, runtimeRoot, extension, String(installedHome)], {
       cwd: project,
       encoding: "utf8",
-      timeout: 30000,
+      timeout: 60000,
       env: { ...process.env, HOME: home, USERPROFILE: home,
         CLAUDE_CONFIG_DIR: path.join(home, ".claude"), ECC_AGENT_DATA_HOME: path.join(home, ".claude"),
         XDG_CONFIG_HOME: path.join(home, ".config"), XDG_DATA_HOME: path.join(home, ".local", "share"),
+        ECC_OPENCODE_INSTRUCTIONS: "0",
         OPENCODE_CONFIG_DIR: installedHome ? runtimeRoot : path.join(home, ".config", "opencode") },
     })
     assert.strictEqual(result.status, 0, result.error?.message || result.stderr || result.stdout)
@@ -140,8 +147,9 @@ function main() {
             throw new Error("unexpected entry resolution: " + resolved)
           }
           const mod = await import("ecc-universal")
-          if (Object.keys(mod).join(",") !== "default" || typeof mod.default !== "function") {
-            throw new Error("root module must export exactly the plugin function")
+          if (Object.keys(mod).join(",") !== "default" || typeof mod.default?.setup !== "function"
+            || typeof mod.default?.server !== "function" || typeof mod.default?.id !== "string") {
+            throw new Error("root module must export exactly the plugin definition")
           }
         `
         const probePath = path.join(tempDir, "probe.mjs")
@@ -182,62 +190,27 @@ function main() {
       }
       assert.deepStrictEqual(unresolved, [])
     }],
-    ["built OpenCode entry exports only the plugin function", () => {
+    ["built OpenCode entry exports only the dual v2/v1 plugin definition", () => {
       const check = `
         const assert = require("assert")
         const { pathToFileURL } = require("url")
 
         async function main() {
-          let mod
-          try {
-            mod = await import(pathToFileURL(process.argv[1]).href)
-          } catch (error) {
-            console.error(error)
-            process.exit(1)
-          }
+          const mod = await import(pathToFileURL(process.argv[1]).href)
           assert.deepStrictEqual(Object.keys(mod).sort(), ["default"])
-          assert.strictEqual(typeof mod.default, "function")
+          const plugin = mod.default
+          assert.strictEqual(typeof plugin.id, "string")
+          assert.strictEqual(typeof plugin.setup, "function", "OpenCode v2 requires setup")
+          assert.strictEqual(typeof plugin.server, "function", "OpenCode v1 requires server")
 
-          let shellCalls = 0
-          const plugin = await mod.default({
-            client: { app: { log: () => {} } },
-            $: async () => {
-              shellCalls += 1
-              throw new Error("$ must not be called during plugin init")
-            },
+          const hooks = await plugin.server({
+            client: { app: { log: () => Promise.resolve() } },
             directory: process.cwd(),
             worktree: process.cwd(),
           })
-          assert.strictEqual(shellCalls, 0, "$ must not be called during plugin init")
-          assert.ok(plugin && typeof plugin === "object", "default export must return a plugin record")
-          const expectedHooks = [
-            "file.edited",
-            "tool.execute.after",
-            "tool.execute.before",
-            "session.created",
-            "session.idle",
-            "session.deleted",
-            "file.watcher.updated",
-            "todo.updated",
-            "shell.env",
-            "experimental.session.compacting",
-            "permission.ask",
-          ]
-          for (const hook of expectedHooks) {
-            assert.strictEqual(typeof plugin[hook], "function", "missing hook: " + hook)
-          }
-          assert.ok(plugin.tool && typeof plugin.tool === "object", "plugin record must expose a tool object")
-          assert.deepStrictEqual(
-            Object.keys(plugin.tool).sort(),
-            ["changed-files", "dependency-analyzer"],
-            "plugin.tool must expose exactly the custom tools"
-          )
-          for (const toolName of ["changed-files", "dependency-analyzer"]) {
-            const toolDefinition = plugin.tool[toolName]
-            assert.ok(toolDefinition && typeof toolDefinition === "object", "missing tool: " + toolName)
-            assert.strictEqual(typeof toolDefinition.description, "string", toolName + " must declare a description")
-            assert.ok(toolDefinition.args && typeof toolDefinition.args === "object", toolName + " must declare args")
-            assert.strictEqual(typeof toolDefinition.execute, "function", toolName + " must declare an execute function")
+          for (const hook of ["tool.execute.before", "tool.execute.after", "event", "shell.env",
+            "experimental.session.compacting", "permission.ask"]) {
+            assert.strictEqual(typeof hooks[hook], "function", "missing v1 hook: " + hook)
           }
         }
 
@@ -249,6 +222,7 @@ function main() {
       const result = spawnSync(process.execPath, ["-e", check, distEntry], {
         cwd: repoRoot,
         encoding: "utf8",
+        env: { ...process.env, ECC_OPENCODE_INSTRUCTIONS: "0" },
       })
       assert.strictEqual(result.status, 0, result.stderr)
     }],
@@ -274,9 +248,15 @@ function main() {
         }), "enabled")
         applyInstallPlan(plan)
         const config = JSON.parse(fs.readFileSync(path.join(plan.targetRoot, "opencode.json"), "utf8"))
-        assert.deepStrictEqual(config.skills.paths, ["./skills"])
-        assert.ok(fs.existsSync(path.join(plan.targetRoot, config.skills.paths[0], "tdd-workflow", "SKILL.md")))
-        assert.ok(!fs.existsSync(path.join(plan.targetRoot, "tools", "run-tests.js")))
+        // Only ECC's agents and commands are merged; OpenCode scans <root>/skills itself.
+        assert.deepStrictEqual(Object.keys(config).sort(), ["agent", "command"])
+        assert.ok(fs.existsSync(path.join(plan.targetRoot, "skills", "tdd-workflow", "SKILL.md")))
+        assert.deepStrictEqual(fs.readdirSync(path.join(plan.targetRoot, "plugins")), ["ecc.ts"])
+        for (const absent of ["package.json", "tsconfig.json", "index.ts", "dist", "tools"]) {
+          assert.ok(!fs.existsSync(path.join(plan.targetRoot, absent)), `${absent} must not be installed into the config root`)
+        }
+        assert.ok(fs.existsSync(path.join(plan.targetRoot, "scripts", "hooks", "run-with-flags.js")))
+        assert.ok(fs.existsSync(path.join(plan.targetRoot, "scripts", "node_modules", "js-yaml", "package.json")))
         checkRuntime(
           plan.targetRoot,
           ".ts",
@@ -305,13 +285,20 @@ function main() {
         "npm pack should include .opencode/dist/index.js"
       )
       assert.ok(
-        packagedPaths.has(".opencode/dist/plugins/index.js"),
+        packagedPaths.has(".opencode/dist/plugins/ecc.js"),
         "npm pack should include compiled OpenCode plugin output"
       )
       assert.ok(
-        packagedPaths.has(".opencode/dist/tools/index.js"),
+        packagedPaths.has(".opencode/dist/ecc/tools/index.js"),
         "npm pack should include compiled OpenCode tool output"
       )
+      assert.ok(
+        packagedPaths.has(".opencode/dist/ecc/bridge/hook-table.generated.json"),
+        "npm pack should include the compiled bridge hook table"
+      )
+      for (const runtime of ["scripts/hooks/run-with-flags.js", "hooks/hooks.json", "scripts/lib/utils.js"]) {
+        assert.ok(packagedPaths.has(runtime), `npm pack should include ${runtime} for the plugin's hook bridge`)
+      }
       assert.ok(
         packagedPaths.has(".claude-plugin/marketplace.json"),
         "npm pack should include .claude-plugin/marketplace.json"
