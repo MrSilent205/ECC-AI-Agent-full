@@ -314,6 +314,17 @@ function runTests() {
         assert.strictEqual(fs.existsSync(`${value.installStatePath}.ecc.lock`), false);
       }));
     }
+    test(`fresh ${consent || 'default'} apply preserves inactive user JSONC config`, () => fixture(value => {
+      fs.unlinkSync(value.installStatePath);
+      fs.unlinkSync(path.join(value.targetRoot, 'plugins/ecc-hooks.ts'));
+      const destination = path.join(value.targetRoot, 'opencode.json');
+      const content = '{\n  // user note\n  "userSetting": "keep",\n  "plugin": ["user-plugin",],\n}\n';
+      fs.writeFileSync(destination, content);
+      const result = applyInstallPlan(withHookConsent(value.basePlan, consent));
+      assert.strictEqual(result.applied, true);
+      assert.strictEqual(fs.readFileSync(destination, 'utf8'), content);
+      assert.ok(result.skippedOperations.some(operation => operation.destinationPath === destination));
+    }));
     test(`fresh ${consent || 'default'} apply still refuses active unrecorded config`, () => fixture(value => {
       fs.unlinkSync(value.installStatePath);
       fs.unlinkSync(path.join(value.targetRoot, 'plugins/ecc-hooks.ts'));

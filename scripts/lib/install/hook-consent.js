@@ -46,7 +46,8 @@ function normalizeOperationPath(value) {
 }
 
 // OpenCode reads opencode.json as JSONC, so comments and trailing commas are
-// valid there. Strip them outside of string literals before JSON.parse.
+// valid there. Replace comments outside of string literals with a space, so
+// that `1/* x */2` stays two tokens and still fails JSON.parse.
 function stripJsonComments(text) {
   let out = '';
   let i = 0;
@@ -62,9 +63,12 @@ function stripJsonComments(text) {
       i = j + 1;
     } else if (ch === '/' && next === '/') {
       while (i < text.length && text[i] !== '\n' && text[i] !== '\r') i++;
+      out += ' ';
     } else if (ch === '/' && next === '*') {
       const end = text.indexOf('*/', i + 2);
-      i = end === -1 ? text.length : end + 2;
+      if (end === -1) throw new SyntaxError('Unterminated block comment');
+      i = end + 2;
+      out += ' ';
     } else {
       out += ch;
       i++;

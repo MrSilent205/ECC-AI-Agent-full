@@ -214,6 +214,13 @@ function runTests() {
     assert.throws(() => parseJsonc('{"a": 1,, }'));
   })) passed++; else failed++;
 
+  if (test('JSONC parsing rejects comments that would hide broken input', () => {
+    assert.throws(() => parseJsonc('{"a": 1/* note */2}'));
+    assert.throws(() => parseJsonc('{"a": 1} /* unfinished'), /Unterminated block comment/);
+    assert.throws(() => disableOpenCodeHookPluginRegistration('{"plugin": []} /*', '.opencode/opencode.json'),
+      /Failed to parse \.opencode\/opencode\.json/);
+  })) passed++; else failed++;
+
   if (test('historical OpenCode activation bytes alone do not imply hook consent', () => {
     const state = {
       request: {}, resolution: { selectedModules: ['platform-configs'] },
