@@ -45,10 +45,67 @@ function normalizeOperationPath(value) {
   return String(value || '').replace(/\\/g, '/').toLowerCase();
 }
 
+// OpenCode reads opencode.json as JSONC, so comments and trailing commas are
+// valid there. Strip them outside of string literals before JSON.parse.
+function stripJsonComments(text) {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') {
+        j += text[j] === '\\' ? 2 : 1;
+      }
+      out += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (ch === '/' && next === '/') {
+      while (i < text.length && text[i] !== '\n' && text[i] !== '\r') i++;
+    } else if (ch === '/' && next === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end === -1 ? text.length : end + 2;
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  return out;
+}
+
+function closesAfter(text, index) {
+  const closer = /\s*[}\]]/y;
+  closer.lastIndex = index;
+  return closer.test(text);
+}
+
+function parseJsonc(text) {
+  const stripped = stripJsonComments(text);
+  let out = '';
+  let i = 0;
+  while (i < stripped.length) {
+    const ch = stripped[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < stripped.length && stripped[j] !== '"') {
+        j += stripped[j] === '\\' ? 2 : 1;
+      }
+      out += stripped.slice(i, j + 1);
+      i = j + 1;
+    } else if (ch === ',' && closesAfter(stripped, i + 1)) {
+      i++;
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  return JSON.parse(out);
+}
+
 function disableOpenCodeHookPluginRegistration(content, sourceRelativePath) {
   let config;
   try {
-    config = JSON.parse(content);
+    config = parseJsonc(content);
   } catch (error) {
     throw new Error(`Failed to parse ${sourceRelativePath}: ${error.message}`);
   }
@@ -328,6 +385,7 @@ module.exports = {
   assertHookConsentReady,
   disableUnselectedOpenCodeHooks,
   disableOpenCodeHookPluginRegistration,
+  parseJsonc,
   getDisabledOpenCodePluginContent,
   getOpenCodeActivationPathKind,
   getOpenCodeSourceActivationKind,

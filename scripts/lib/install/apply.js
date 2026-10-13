@@ -16,6 +16,7 @@ const {
   getRecordedHookConsent,
   getOpenCodeActivationPathKind,
   getOpenCodeSourceActivationKind,
+  parseJsonc,
   planMaterializesHookRuntime,
   shouldDisableOpenCodeHooks,
 } = require('./hook-consent');
@@ -453,7 +454,7 @@ function activationIsInactive(kind, operation, content) {
   const text = content.toString('utf8');
   // Validate first so malformed JSON retains its source context.
   disableOpenCodeHookPluginRegistration(text, operation.sourceRelativePath || operation.destinationPath);
-  const config = JSON.parse(text);
+  const config = parseJsonc(text);
   return !Array.isArray(config.plugin) || !config.plugin.includes('./plugins');
 }
 
