@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawnSync, execFileSync } = require('node:child_process');
 const { test } = require('node:test');
 const { buildAntigravityHooksConfig } = require('../../scripts/lib/antigravity-hooks');
 
@@ -105,6 +105,39 @@ test('managed profile is used unless an explicit environment choice overrides it
     assert.match(invoke('pre-tool-use', 'pre:write:doc-file-warning', payload, {
       ECC_HOOK_PROFILE: 'strict', ECC_HOOK_CONFIG: config,
     }).reason, /Ad-hoc documentation/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Stop diagnostics inspect the payload workspace rather than the launch directory', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-agy-stop-cwd-'));
+  try {
+    const workspace = path.join(root, 'workspace');
+    const unrelated = path.join(root, 'unrelated');
+    const env = {
+      ...process.env, ECC_HOOK_PROFILE: 'standard', ECC_HOOKS_ENABLED: 'true',
+      ECC_DISABLED_HOOKS: '', ECC_DRY_RUN: '0', ECC_HOOK_CONFIG: '',
+      GIT_CONFIG_GLOBAL: path.join(root, 'no-global-config'), GIT_CONFIG_NOSYSTEM: '1',
+    };
+    for (const [dir, name] of [[workspace, 'intended.js'], [unrelated, 'unrelated.js']]) {
+      fs.mkdirSync(dir);
+      execFileSync('git', ['init', '--quiet', dir], { env });
+      fs.writeFileSync(path.join(dir, name), 'const value = 1;\n');
+      execFileSync('git', ['-C', dir, 'add', name], { env });
+      fs.appendFileSync(path.join(dir, name), 'console.log(value);\n');
+    }
+    for (const cwd of [root, unrelated]) {
+      const child = spawnSync(process.execPath, [bridge, '--mode', 'stop', '--hook', 'stop:check-console-log'], {
+        cwd, env, encoding: 'utf8', timeout: 15000,
+        input: JSON.stringify({ workspacePaths: [workspace], fullyIdle: true }),
+      });
+      assert.equal(child.status, 0, child.stderr);
+      const response = JSON.parse(child.stdout);
+      assert.equal(response.decision, 'continue');
+      assert.match(response.reason, /intended\.js/);
+      assert.doesNotMatch(response.reason, /unrelated\.js/);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
