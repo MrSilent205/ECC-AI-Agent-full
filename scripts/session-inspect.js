@@ -39,7 +39,8 @@ function usage() {
 
 function parseArgs(argv) {
   const args = argv.slice(2);
-  const target = args.find(argument => !argument.startsWith('--'));
+  const valueOptions = ['--adapter', '--target-type', '--skill', '--amendment-id', '--observations', '--write'];
+  const target = args.find((argument, index) => !argument.startsWith('--') && !valueOptions.includes(args[index - 1]));
   const listAdapters = args.includes('--list-adapters');
 
   const adapterIndex = args.indexOf('--adapter');
