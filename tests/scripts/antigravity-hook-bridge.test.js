@@ -23,6 +23,7 @@ async function invoke({ hook = 'pre:edit-write:gateguard-fact-force', mode = 'pr
     './doc-file-warning': { run },
     './post-edit-accumulator': { run },
     './stop-format-typecheck': { run },
+    '../lib/hook-flags': { isHookEnabled: () => true, isDryRun: () => false },
     './hook-input': {
       resolveMaxStdin: () => 1024,
       readStdinRaw: async () => { if (readError) throw new Error('read failed'); return { raw, truncated }; },

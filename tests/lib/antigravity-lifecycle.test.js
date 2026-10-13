@@ -8,7 +8,7 @@ const path = require('path');
 const { createManifestInstallPlan } = require('../../scripts/lib/install/plan');
 const { applyInstallPlan } = require('../../scripts/lib/install/apply');
 const { withHookConsent } = require('../../scripts/lib/install/hook-consent');
-const { buildDoctorReport, repairInstalledStates } = require('../../scripts/lib/install-lifecycle');
+const { buildDoctorReport, repairInstalledStates, uninstallInstalledStates } = require('../../scripts/lib/install-lifecycle');
 
 const repoRoot = path.join(__dirname, '..', '..');
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-lifecycle-'));
@@ -25,24 +25,7 @@ try {
     projectRoot,
   }), 'enabled');
   const workflowPath = path.join(homeDir, '.gemini', 'config', 'workflows', 'plan.md');
-  const workflowOperation = {
-    kind: 'copy-file',
-    moduleId: 'commands-core',
-    sourcePath: path.join(repoRoot, 'commands', 'plan.md'),
-    sourceRelativePath: 'commands/plan.md',
-    destinationPath: workflowPath,
-    strategy: 'preserve-relative-path',
-    ownership: 'managed',
-    scaffoldOnly: false,
-  };
-  applyInstallPlan({
-    ...plan,
-    operations: [...plan.operations, workflowOperation],
-    statePreview: {
-      ...plan.statePreview,
-      operations: [...plan.statePreview.operations, workflowOperation],
-    },
-  });
+  applyInstallPlan(plan);
 
   const original = fs.readFileSync(workflowPath, 'utf8');
   fs.unlinkSync(workflowPath);
@@ -77,7 +60,51 @@ try {
   assert.strictEqual(refused.status, 'error');
   assert.match(refused.error, /unsafe managed destination|symlink/i);
   assert.strictEqual(fs.readFileSync(outsidePath, 'utf8'), 'user content');
-  console.log('Results: Passed: 3, Failed: 0');
+
+  const uninstalled = uninstallInstalledStates({
+    homeDir,
+    projectRoot,
+    targets: ['antigravity-home'],
+  }).results[0];
+  assert.strictEqual(uninstalled.status, 'partial', uninstalled.error);
+  assert.ok(uninstalled.retainedPaths.includes(workflowPath));
+  assert.ok(fs.lstatSync(workflowPath).isSymbolicLink());
+  assert.strictEqual(fs.readFileSync(outsidePath, 'utf8'), 'user content');
+
+  const symlinkHome = path.join(fixtureRoot, 'symlink-home');
+  const symlinkProject = path.join(fixtureRoot, 'symlink-project');
+  fs.mkdirSync(symlinkHome);
+  fs.mkdirSync(symlinkProject);
+  const symlinkPlan = withHookConsent(createManifestInstallPlan({
+    profileId: 'core',
+    target: 'antigravity-home',
+    homeDir: symlinkHome,
+    projectRoot: symlinkProject,
+  }), 'enabled');
+  applyInstallPlan(symlinkPlan);
+  const workflowsRoot = path.join(symlinkHome, '.gemini', 'config', 'workflows');
+  const externalRoot = path.join(fixtureRoot, 'external-workflows');
+  fs.renameSync(workflowsRoot, externalRoot);
+  fs.symlinkSync(externalRoot, workflowsRoot, 'dir');
+  const externalWorkflow = path.join(externalRoot, 'plan.md');
+  const externalContent = fs.readFileSync(externalWorkflow, 'utf8');
+
+  assert.throws(() => applyInstallPlan(symlinkPlan), /outside|symlink|trusted/i);
+  const rootSymlinkRepair = repairInstalledStates({
+    repoRoot,
+    homeDir: symlinkHome,
+    projectRoot: symlinkProject,
+    targets: ['antigravity-home'],
+  }).results[0];
+  const rootSymlinkUninstall = uninstallInstalledStates({
+    homeDir: symlinkHome,
+    projectRoot: symlinkProject,
+    targets: ['antigravity-home'],
+  }).results[0];
+  assert.strictEqual(rootSymlinkRepair.status, 'error');
+  assert.strictEqual(rootSymlinkUninstall.status, 'error');
+  assert.strictEqual(fs.readFileSync(externalWorkflow, 'utf8'), externalContent);
+  console.log('Results: Passed: 5, Failed: 0');
 } finally {
   fs.rmSync(fixtureRoot, { recursive: true, force: true });
 }

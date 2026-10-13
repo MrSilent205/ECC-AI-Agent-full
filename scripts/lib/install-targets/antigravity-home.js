@@ -15,21 +15,8 @@ const {
 const { buildAntigravityHooksConfig } = require('../antigravity-hooks');
 const { buildAntigravityMcpConfig, planAntigravityMemoryRuntime } = require('../antigravity-mcp');
 const { buildAntigravityPluginManifest } = require('../antigravity-plugin');
-
-function readJsonObject(filePath, label) {
-  let parsed;
-  try {
-    parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch (error) {
-    throw new Error(`Failed to parse ${label} at ${filePath}: ${error.message}`);
-  }
-
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`Invalid ${label} at ${filePath}: expected a JSON object`);
-  }
-
-  return parsed;
-}
+const { getHookProfile } = require('../hook-flags');
+const { isWithinRoot } = require('../path-safety');
 
 module.exports = createInstallTargetAdapter({
   id: 'antigravity-home',
@@ -40,10 +27,11 @@ module.exports = createInstallTargetAdapter({
   nativeRootRelativePath: '.gemini',
   excludedSourcePaths: HOME_INSTALL_EXCLUDED_SOURCE_PATHS,
   resolveTrustedRoots(input, targetRoot) {
-    const workflowsRoot = path.join(
-      path.dirname(path.dirname(targetRoot)),
-      'workflows'
-    );
+    const configRoot = path.dirname(path.dirname(targetRoot));
+    const workflowsRoot = path.join(configRoot, 'workflows');
+    if (!isWithinRoot(workflowsRoot, configRoot)) {
+      throw new Error('Refusing Antigravity workflows outside the trusted config root.');
+    }
     return [targetRoot, workflowsRoot];
   },
   planOperations(input, adapter) {
@@ -141,6 +129,7 @@ module.exports = createInstallTargetAdapter({
             module.id === 'hooks-runtime'
             && normalizedSourcePath === 'hooks'
           ) {
+            const profile = getHookProfile(input.env);
             return [
               createManagedScaffoldOperation(module.id, 'package.json', path.join(targetRoot, 'package.json'), 'preserve-relative-path'),
               createManagedOperation({
@@ -152,9 +141,19 @@ module.exports = createInstallTargetAdapter({
                 ownership: 'managed',
                 scaffoldOnly: false,
                 mergePayload: buildAntigravityHooksConfig({
-                  profile: input.hookProfile || 'standard',
+                  profile,
                   bridgeScript: path.join(targetRoot, 'scripts', 'hooks', 'antigravity-hook-bridge.js'),
                 }),
+              }),
+              createManagedOperation({
+                kind: 'merge-json',
+                moduleId: module.id,
+                sourceRelativePath: 'hooks/hooks.json',
+                destinationPath: path.join(targetRoot, 'ecc', 'setup.json'),
+                strategy: 'merge-json',
+                ownership: 'managed',
+                scaffoldOnly: false,
+                mergePayload: { hooks: { enabled: true, profile } },
               }),
             ];
           }
@@ -163,18 +162,9 @@ module.exports = createInstallTargetAdapter({
             module.id === 'platform-configs'
             && (normalizedSourcePath === 'mcp-configs' || normalizedSourcePath === '.mcp.json')
           ) {
-            const baseMcp = (repoRoot && fs.existsSync(path.join(repoRoot, '.mcp.json')))
-              ? readJsonObject(path.join(repoRoot, '.mcp.json'), '.mcp.json')
-              : { mcpServers: {} };
             const antigravityMcp = buildAntigravityMcpConfig({
               memoryScript: path.join(targetRoot, 'scripts', 'memory-mcp.mjs'),
             });
-            const mergedMcp = {
-              mcpServers: {
-                ...(baseMcp.mcpServers || {}),
-                ...(antigravityMcp.mcpServers || {}),
-              },
-            };
 
             const operations = [
               createManagedOperation({
@@ -185,7 +175,7 @@ module.exports = createInstallTargetAdapter({
                 strategy: 'merge-json',
                 ownership: 'managed',
                 scaffoldOnly: false,
-                mergePayload: mergedMcp,
+                mergePayload: antigravityMcp,
               }),
               createManagedOperation({
                 kind: 'merge-json',

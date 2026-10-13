@@ -254,7 +254,7 @@ function writeClaudeCommitAttributionPreference(settingsPath, options = {}) {
 
 function isMcpConfigPath(filePath) {
   const basename = path.basename(String(filePath || ''));
-  return basename === '.mcp.json' || basename === 'mcp.json';
+  return basename === '.mcp.json' || basename === 'mcp.json' || basename === 'mcp_config.json';
 }
 
 function getTrustedRootsForPlan(plan) {

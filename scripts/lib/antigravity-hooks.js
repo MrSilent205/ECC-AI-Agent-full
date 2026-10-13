@@ -12,7 +12,6 @@ const { shellQuote } = require('./control-pane/actions');
  */
 
 function buildAntigravityHooksConfig(options = {}) {
-  const profile = options.profile || 'standard';
   const { bridgeScript } = options;
   if (typeof bridgeScript !== 'string' || !path.isAbsolute(bridgeScript) || bridgeScript.includes('\0')) {
     throw new Error('bridgeScript must be an absolute path');
@@ -55,8 +54,8 @@ function buildAntigravityHooksConfig(options = {}) {
     },
   ];
 
-  if (profile === 'standard' || profile === 'strict') {
-    preToolUseHandlers.push({
+  // Runtime hook flags select the profile, including explicit environment overrides.
+  preToolUseHandlers.push({
       matcher: 'write_to_file',
       hooks: [
         {
@@ -65,8 +64,7 @@ function buildAntigravityHooksConfig(options = {}) {
           timeout: 5,
         },
       ],
-    });
-  }
+  });
 
   const stopHandlers = [
     {

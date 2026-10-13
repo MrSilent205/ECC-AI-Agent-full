@@ -874,7 +874,8 @@ function inspectManagedOperation(repoRoot, trustedRoot, operation, linkIndex = n
 }
 
 function trustedRootForDestination(destinationPath, targetRoot, trustedRoots = [targetRoot]) {
-  return trustedRoots.find(root => isWithinRoot(destinationPath, root)) || targetRoot;
+  const parent = typeof destinationPath === 'string' ? path.dirname(destinationPath) : destinationPath;
+  return trustedRoots.find(root => isWithinRoot(parent, root)) || targetRoot;
 }
 
 function summarizeManagedOperationHealth(repoRoot, trustedRoot, operations, target = null, trustedRoots = [trustedRoot]) {

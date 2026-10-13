@@ -16,6 +16,7 @@ const { run: runGateGuard } = require('./gateguard-fact-force');
 const { run: runDocFileWarning } = require('./doc-file-warning');
 const { run: runPostEditAccumulator } = require('./post-edit-accumulator');
 const { readStdinRaw, resolveMaxStdin } = require('./hook-input');
+const { isHookEnabled, isDryRun } = require('../lib/hook-flags');
 
 function parseArgs(argv) {
   const options = {
@@ -71,6 +72,12 @@ function writeFailure(mode, reason) {
 
 async function main() {
   const options = parseArgs(process.argv);
+  process.env.ECC_HOOK_CONFIG ||= path.resolve(__dirname, '../../ecc/setup.json');
+  const profiles = options.hook === 'pre:bash:dispatcher' ? 'minimal,standard,strict' : undefined;
+  if (!isHookEnabled(options.hook, { profiles }) || isDryRun()) {
+    process.stdout.write(JSON.stringify(options.mode === 'post-tool-use' ? {} : { decision: 'allow' }));
+    return;
+  }
   const maxStdin = resolveMaxStdin(process.env.ECC_HOOK_INPUT_MAX_BYTES);
 
   let raw = '';

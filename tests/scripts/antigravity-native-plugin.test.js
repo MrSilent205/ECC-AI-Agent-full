@@ -10,15 +10,17 @@ const { applyInstallPlan } = require('../../scripts/lib/install/apply');
 const { withHookConsent } = require('../../scripts/lib/install/hook-consent');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-agy-native-'));
+const loaderHome = path.join(root, 'loader-home');
+fs.mkdirSync(loaderHome);
 // Only pass filesystem locations owned by this test; never inherit authentication.
 const env = {
   PATH: process.env.PATH,
-  HOME: root,
-  USERPROFILE: root,
-  XDG_CONFIG_HOME: path.join(root, '.config'),
-  XDG_DATA_HOME: path.join(root, '.local', 'share'),
-  XDG_CACHE_HOME: path.join(root, '.cache'),
-  ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot, APPDATA: root, LOCALAPPDATA: root } : {}),
+  HOME: loaderHome,
+  USERPROFILE: loaderHome,
+  XDG_CONFIG_HOME: path.join(loaderHome, '.config'),
+  XDG_DATA_HOME: path.join(loaderHome, '.local', 'share'),
+  XDG_CACHE_HOME: path.join(loaderHome, '.cache'),
+  ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot, APPDATA: loaderHome, LOCALAPPDATA: loaderHome } : {}),
 };
 
 function agy(args) {
@@ -42,7 +44,7 @@ try {
       profileId: 'core',
       target: 'antigravity-home',
       projectRoot: path.join(root, 'workspace'),
-      homeDir: root,
+      homeDir: path.join(root, 'install-home'),
     }), 'enabled');
     applyInstallPlan(plan);
     assert.ok(fs.existsSync(path.join(plan.targetRoot, 'plugin.json')));

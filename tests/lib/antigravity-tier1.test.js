@@ -380,6 +380,7 @@ function runTests() {
     const run = spawnSync(process.execPath, [bridgePath, '--mode', 'pre-tool-use', '--hook', 'pre:bash:dispatcher'], {
       input,
       encoding: 'utf8',
+      env: { ...process.env, GATEGUARD_BASH_ROUTINE_DISABLED: '1' },
     });
 
     assert.strictEqual(run.status, 0);
