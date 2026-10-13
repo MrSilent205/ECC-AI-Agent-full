@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
+const { buildAntigravityHooksConfig } = require('../../scripts/lib/antigravity-hooks');
 
 const bridge = path.resolve(__dirname, '../../scripts/hooks/antigravity-hook-bridge.js');
 const controls = [
@@ -14,6 +15,12 @@ const controls = [
   { ECC_DISABLED_HOOKS: 'stop:format-typecheck' },
   { ECC_DRY_RUN: '1' },
 ];
+
+test('minimal installs retain warning handlers for explicit runtime profile overrides', () => {
+  const config = buildAntigravityHooksConfig({ profile: 'minimal', bridgeScript: bridge });
+  assert.ok(config['ecc-guard'].PreToolUse.some(entry =>
+    entry.hooks.some(hook => hook.command.includes('pre:write:doc-file-warning'))));
+});
 
 function invoke(mode, hook, payload, env = {}) {
   const child = spawnSync(process.execPath, [bridge, '--mode', mode, '--hook', hook], {
