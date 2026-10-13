@@ -1951,11 +1951,14 @@ function repairInstalledStates(options = {}) {
 
 
 function uninstallInstalledStates(options = {}) {
-  const records = discoverInstalledStates({
-    homeDir: options.homeDir,
-    projectRoot: options.projectRoot,
-    targets: options.targets,
+  const context = {
+    homeDir: options.homeDir || process.env.HOME || os.homedir(),
+    projectRoot: options.projectRoot || process.cwd(),
     env: resolveInvocationEnvironment(options),
+  };
+  const records = discoverInstalledStates({
+    ...context,
+    targets: options.targets,
   }).filter(record => record.exists);
 
   const results = records.map(record => {
@@ -2014,7 +2017,7 @@ function uninstallInstalledStates(options = {}) {
 
       const adapter = record.adapter && getInstallTargetAdapter(record.adapter.id || record.adapter.target);
       const trustedRoots = adapter && typeof adapter.resolveTrustedRoots === 'function'
-        ? adapter.resolveTrustedRoots({ homeDir: options.homeDir, projectRoot: options.projectRoot })
+        ? adapter.resolveTrustedRoots(context)
         : [record.targetRoot];
 
       const { isScriptBoundary, retainScriptBoundary } = require('./install/opencode-script-boundary');

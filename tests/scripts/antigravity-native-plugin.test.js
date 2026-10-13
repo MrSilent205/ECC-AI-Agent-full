@@ -37,6 +37,7 @@ try {
   const version = agy(['--version']);
   if (version.error?.code === 'ENOENT' || (version.status === 0 && version.stdout.trim() !== '1.2.9')) {
     console.log(`SKIP: native plugin validation requires installed agy 1.2.9 (found ${version.stdout?.trim() || 'none'}); no download attempted.`);
+    console.log('Results: Passed: 0, Failed: 0');
   } else {
     assert.strictEqual(version.status, 0, version.error?.message || version.stderr);
     const plan = withHookConsent(createManifestInstallPlan({
@@ -58,6 +59,7 @@ try {
     assert.ok(plugin.components.includes('mcpServers'), 'Native importer must register ECC memory');
     console.log('PASS: agy 1.2.9 validates and imports the generated ECC plugin in a disposable HOME.');
     console.log('NOT CHECKED: authenticated tool execution, Stop execution, and automatic IDE discovery.');
+    console.log('Results: Passed: 1, Failed: 0');
   }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

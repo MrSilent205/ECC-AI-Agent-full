@@ -104,7 +104,31 @@ try {
   assert.strictEqual(rootSymlinkRepair.status, 'error');
   assert.strictEqual(rootSymlinkUninstall.status, 'error');
   assert.strictEqual(fs.readFileSync(externalWorkflow, 'utf8'), externalContent);
-  console.log('Results: Passed: 5, Failed: 0');
+
+  const defaultHome = path.join(fixtureRoot, 'default-home');
+  const defaultProject = path.join(fixtureRoot, 'default-project');
+  fs.mkdirSync(defaultHome);
+  fs.mkdirSync(defaultProject);
+  applyInstallPlan(withHookConsent(createManifestInstallPlan({
+    profileId: 'core',
+    target: 'antigravity',
+    homeDir: defaultHome,
+    projectRoot: defaultProject,
+  }), 'enabled'));
+  const previousHome = process.env.HOME;
+  const previousCwd = process.cwd();
+  try {
+    process.env.HOME = defaultHome;
+    process.chdir(defaultProject);
+    const defaultUninstall = uninstallInstalledStates({ targets: ['antigravity'] }).results[0];
+    assert.strictEqual(defaultUninstall.status, 'uninstalled', defaultUninstall.error);
+    assert.ok(!fs.existsSync(path.join(defaultProject, '.agents', 'ecc-install-state.json')));
+  } finally {
+    process.chdir(previousCwd);
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
+  console.log('Results: Passed: 6, Failed: 0');
 } finally {
   fs.rmSync(fixtureRoot, { recursive: true, force: true });
 }

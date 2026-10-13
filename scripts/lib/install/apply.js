@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { isDeepStrictEqual } = require('util');
 
 const {
   hasExplicitCommitAttributionPreference,
@@ -18,6 +19,7 @@ const {
   getOpenCodeSourceActivationKind,
   planMaterializesHookRuntime,
   shouldDisableOpenCodeHooks,
+  shouldDisableAntigravityHooks,
 } = require('./hook-consent');
 const {
   getClaudeSettingsPath,
@@ -83,10 +85,10 @@ function buildLinkIndexForPlan(plan) {
   return buildInstallIndex(mappings);
 }
 
-function readJsonObject(filePath, label) {
+function readJsonObject(filePath, label, readContent = () => fs.readFileSync(filePath, 'utf8')) {
   let parsed;
   try {
-    parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    parsed = JSON.parse(readContent());
   } catch (error) {
     const wrappedError = new Error(`Failed to parse ${label} at ${filePath}: ${error.message}`);
     wrappedError.code = error.code;
@@ -629,6 +631,68 @@ function preflightClaudeSettingsOperations(plan) {
   }));
 }
 
+function withoutManagedAntigravityHooks(plan, operation) {
+  const content = readInstalledFileNoFollow(plan, operation);
+  const config = content === null ? {} : JSON.parse(content.toString('utf8'));
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error(`Invalid Antigravity hooks config: ${operation.destinationPath}`);
+  }
+  if (Object.hasOwn(config, 'ecc-guard')
+    && !isDeepStrictEqual(config['ecc-guard'], operation.mergePayload?.['ecc-guard'])) {
+    throw new Error(`Refusing to disable modified Antigravity hooks in ${operation.destinationPath}.`);
+  }
+  const userHooks = Object.fromEntries(Object.entries(config).filter(([name]) => name !== 'ecc-guard'));
+  return {
+    content: formatJson(userHooks),
+    expectedContent: content === null ? { kind: 'absent' } : {
+      kind: 'sha256', digest: crypto.createHash('sha256').update(content).digest('hex'),
+    },
+  };
+}
+
+function prepareAntigravityHookDeactivation(plan, migration, previousState) {
+  if (!shouldDisableAntigravityHooks(plan)) return migration;
+  const hooksPath = path.join(plan.targetRoot, 'hooks.json');
+  const previousHooks = previousState.operations.find(operation => (
+    operation.ownership === 'managed' && operation.kind === 'merge-json'
+    && operation.moduleId === 'hooks-runtime'
+    && comparablePath(operation.destinationPath) === comparablePath(hooksPath)
+  ));
+  if (!previousHooks) return migration;
+  const removal = { ...previousHooks, kind: 'remove-antigravity-hooks' };
+  // Check before ordinary writes, then re-read at the guarded write boundary.
+  withoutManagedAntigravityHooks(plan, removal);
+  const disabledSetup = {
+    ...previousHooks,
+    kind: 'merge-json',
+    destinationPath: path.join(plan.targetRoot, 'ecc', 'setup.json'),
+    mergePayload: { hooks: { enabled: false } },
+  };
+  assertSafeInstallOperation(plan, disabledSetup);
+  readOptionalJsonObject(disabledSetup.destinationPath, 'managed hook setup');
+  const changed = new Set([hooksPath, disabledSetup.destinationPath].map(comparablePath));
+  return {
+    ...migration,
+    appliedOperations: [
+      ...migration.appliedOperations, removal,
+      { ...disabledSetup, kind: 'disable-antigravity-hook-setup' },
+    ],
+    warnings: [...migration.warnings, 'Disabling previously installed Antigravity hooks; preserving user hook namespaces.'],
+    finalState: {
+      ...migration.finalState,
+      operations: [
+        ...migration.finalState.operations.filter(operation => !changed.has(comparablePath(operation.destinationPath))),
+        { ...previousHooks, mergePayload: {} }, disabledSetup,
+      ],
+    },
+    bridgeState: {
+      ...migration.bridgeState,
+      request: { ...migration.bridgeState.request, hookConsent: getRecordedHookConsent(previousState) },
+    },
+    requiresBridgeState: true,
+  };
+}
+
 function prepareHookConsentMigration(plan, migration) {
   if (shouldDisableOpenCodeHooks(plan) && migration.requiresBridgeState) {
     const previousState = readPreviousInstallState(plan);
@@ -657,6 +721,9 @@ function prepareHookConsentMigration(plan, migration) {
   const previousState = readPreviousInstallState(plan);
   if (!previousState) {
     return migration;
+  }
+  if (shouldDisableAntigravityHooks(plan)) {
+    return prepareAntigravityHookDeactivation(plan, migration, previousState);
   }
 
   const removals = (previousState.operations || [])
@@ -844,6 +911,32 @@ function applyInstallPlanLocked(plan, dependencies = {}, settingsLockHeld = fals
         assertOpenCodeScriptBoundary(appliedPlan, writtenDestinations);
       }
       assertOpenCodeActivationUnchanged(appliedPlan, operation, activationSnapshot);
+
+      if (['remove-antigravity-hooks', 'disable-antigravity-hook-setup'].includes(operation.kind)) {
+        const current = operation.kind === 'disable-antigravity-hook-setup'
+          ? readInstalledFileNoFollow(appliedPlan, operation) : null;
+        const disabled = operation.kind === 'remove-antigravity-hooks'
+          ? withoutManagedAntigravityHooks(appliedPlan, operation)
+          : {
+            content: formatJson(deepMergeJson(
+              readJsonObject(operation.destinationPath, 'managed hook setup', () => current || '{}'),
+              operation.mergePayload
+            )),
+            expectedContent: current === null ? { kind: 'absent' } : {
+              kind: 'sha256', digest: crypto.createHash('sha256').update(current).digest('hex'),
+            },
+          };
+        writeFileNoFollow(operation.destinationPath, disabled.content, {
+          action: 'disable Antigravity hooks',
+          expectedContent: disabled.expectedContent,
+          validateDestination(destinationPath) {
+            assertSafeInstallOperation(appliedPlan, { destinationPath });
+            return destinationPath;
+          },
+        });
+        writtenDestinations.add(operation.destinationPath);
+        continue;
+      }
 
       if (
         operation.kind === 'update-claude-settings'

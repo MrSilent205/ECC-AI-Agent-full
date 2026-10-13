@@ -125,6 +125,8 @@ test('Stop diagnostics inspect the payload workspace rather than the launch dire
       execFileSync('git', ['init', '--quiet', dir], { env });
       fs.writeFileSync(path.join(dir, name), 'const value = 1;\n');
       execFileSync('git', ['-C', dir, 'add', name], { env });
+      execFileSync('git', ['-C', dir, '-c', 'user.name=ECC fixture', '-c', 'user.email=fixture@example.invalid',
+        '-c', 'commit.gpgSign=false', 'commit', '--quiet', '-m', 'fixture'], { env });
       fs.appendFileSync(path.join(dir, name), 'console.log(value);\n');
     }
     for (const cwd of [root, unrelated]) {

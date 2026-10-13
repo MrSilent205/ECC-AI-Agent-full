@@ -178,6 +178,7 @@ async function main() {
     if (stopScript) {
       const child = spawnSync(process.execPath, [path.join(__dirname, stopScript)], {
         input: eccJsonString,
+        cwd: eccPayload.cwd || undefined,
         encoding: 'utf8',
         timeout: options.hook === 'stop:format-typecheck' ? 280000 : 25000,
       });

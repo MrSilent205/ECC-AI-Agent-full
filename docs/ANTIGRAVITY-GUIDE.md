@@ -184,6 +184,10 @@ so they also work when Antigravity runs from another workspace.
 
 Project-local hooks use the same runtime; select `--profile core --enable-hooks`
 with `--target antigravity`. Use `--no-hooks` to omit automatic hooks.
+On reinstall, `--no-hooks` also deactivates previously installed ECC hooks,
+including legacy bridges. Other hook namespaces are preserved. If the managed
+`ecc-guard` registration was customized, installation refuses the change;
+review that customization before retrying.
 Choose a hook profile at installation with the existing environment setting, for
 example `ECC_HOOK_PROFILE=minimal "$ECC_ROOT/install.sh" --target antigravity-home --profile core --enable-hooks`.
 The installer retains it in managed `ecc/setup.json` for runtime execution.

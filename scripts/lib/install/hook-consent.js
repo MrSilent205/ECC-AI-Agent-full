@@ -216,6 +216,11 @@ function shouldDisableOpenCodeHooks(plan = {}) {
     && (plan.hookConsent === 'declined' || !planSelectsHookRuntime(plan));
 }
 
+function shouldDisableAntigravityHooks(plan = {}) {
+  return ['antigravity', 'antigravity-home'].includes(plan.target)
+    && plan.hookConsent === 'declined';
+}
+
 function setStatePreviewHookConsent(statePreview, hookConsent) {
   if (!statePreview || !statePreview.request) {
     return statePreview;
@@ -340,5 +345,6 @@ module.exports = {
   planMaterializesHookRuntime,
   resolveHookConsentFlags,
   shouldDisableOpenCodeHooks,
+  shouldDisableAntigravityHooks,
   withHookConsent,
 };
