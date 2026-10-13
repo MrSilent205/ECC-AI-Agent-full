@@ -21,6 +21,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+const { spawn } = require('child_process');
 const {
   canonicalizeArtifactPath,
   createSessionStore,
@@ -225,7 +226,7 @@ async function cmdOpen(file, args, { stateDir, port }) {
   return {
     status: 'open',
     url,
-    browser: launched ? 'opened' : 'not opened',
+    browser: launched ? 'launch requested' : 'not opened',
     browserReason: launchResult.reason,
     next_step:
       'Run `ecc-plan-canvas await <file>` and leave it running; it returns when the human sends feedback, a verdict, or ends the session.'

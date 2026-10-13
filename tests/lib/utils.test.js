@@ -307,6 +307,17 @@ function runTests() {
     }
   })) passed++; else failed++;
 
+  if (test('sameRepoIdentity compares full-width filesystem IDs', () => {
+    const originalStat = fs.statSync;
+    try {
+      fs.statSync = (file, options) => {
+        assert.equal(options?.bigint, true);
+        return { dev: 1n, ino: file.endsWith('first') ? 9007199254740993n : 9007199254740994n };
+      };
+      assert.ok(!utils.sameRepoIdentity('/missing/first', '/missing/second'));
+    } finally { fs.statSync = originalStat; }
+  })) passed++; else failed++;
+
   // sanitizeSessionId tests
   console.log('\nsanitizeSessionId:');
 
@@ -1260,7 +1271,9 @@ function runTests() {
     `;
     const result = execFileSync('node', ['-e', harness], {
       ...stdinOpts,
-      timeout: 2000
+      // Budget for starting the outer Node process on a loaded Windows host.
+      // The writer/child deadline above still bounds the actual drain to 1.5s.
+      timeout: 15000
     });
     assert.deepStrictEqual(JSON.parse(result), {});
   })) passed++; else failed++;

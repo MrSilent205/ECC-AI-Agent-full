@@ -2749,6 +2749,31 @@ async function runTests() {
   else failed++;
 
   if (
+    test('MCP health-check hooks use anchored ^mcp__ matcher (no wildcard spawns)', () => {
+      const hooksPath = path.join(__dirname, '..', '..', 'hooks', 'hooks.json');
+      const hooks = readHooksConfig(hooksPath);
+
+      const preMcp = hooks.hooks.PreToolUse.filter(entry => JSON.stringify(entry).includes('pre:mcp-health-check'));
+      assert.strictEqual(preMcp.length, 1, 'Should define exactly one PreToolUse mcp-health-check entry');
+      assert.strictEqual(
+        preMcp[0].matcher,
+        '^mcp__',
+        `PreToolUse mcp-health-check matcher must be anchored '^mcp__' so it only spawns on genuine MCP tool names (got ${preMcp[0].matcher})`
+      );
+
+      const postMcp = hooks.hooks.PostToolUseFailure.filter(entry => JSON.stringify(entry).includes('post:mcp-health-check'));
+      assert.strictEqual(postMcp.length, 1, 'Should define exactly one PostToolUseFailure mcp-health-check entry');
+      assert.strictEqual(
+        postMcp[0].matcher,
+        '^mcp__',
+        `PostToolUseFailure mcp-health-check matcher must be anchored '^mcp__' so it only spawns on genuine MCP tool failures (got ${postMcp[0].matcher})`
+      );
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
     test('hooks.json gives PowerShell dedicated GateGuard and governance routes', () => {
       const hooksPath = path.join(__dirname, '..', '..', 'hooks', 'hooks.json');
       const hooks = readHooksConfig(hooksPath);
@@ -2782,6 +2807,23 @@ async function runTests() {
         hooks.hooks.PostToolUse.every(entry => entry.matcher === '.*'),
         'Top-level PostToolUse dispatchers should preserve current-main wildcard matchers'
       );
+    })
+  )
+    passed++;
+  else failed++;
+
+  if (
+    test('hooks.json routes NotebookEdit to the edit-write GateGuard entry only', () => {
+      const hooks = readHooksConfig(path.join(__dirname, '..', '..', 'hooks', 'hooks.json'));
+      const gateRoute = hooks.hooks.PreToolUse.find(entry => entry.id === 'pre:edit-write:gateguard-fact-force');
+      assert.ok(gateRoute, 'edit-write GateGuard route should exist');
+      assert.deepStrictEqual(gateRoute.matcher.split('|').sort(), ['Edit', 'MultiEdit', 'NotebookEdit', 'Write']);
+      assert.strictEqual(gateRoute.hooks.length, 1, 'the GateGuard entry runs no other hook');
+      assert.ok(gateRoute.hooks[0].command.includes('pre:edit-write:gateguard-fact-force'));
+      const others = hooks.hooks.PreToolUse.filter(entry => entry !== gateRoute && entry.matcher !== '.*');
+      for (const entry of others) {
+        assert.ok(!entry.matcher.split('|').includes('NotebookEdit'), `${entry.id} should not start matching NotebookEdit`);
+      }
     })
   )
     passed++;
@@ -3035,7 +3077,7 @@ async function runTests() {
     test('plugin.json does NOT have explicit hooks declaration', () => {
       // Claude Code automatically loads hooks/hooks.json by convention.
       // Explicitly declaring it in plugin.json causes a duplicate detection error.
-      // See: https://github.com/affaan-m/everything-claude-code/issues/103
+      // See: https://github.com/affaan-m/ECC/issues/103
       const pluginPath = path.join(__dirname, '..', '..', '.claude-plugin', 'plugin.json');
       const plugin = JSON.parse(fs.readFileSync(pluginPath, 'utf8'));
 

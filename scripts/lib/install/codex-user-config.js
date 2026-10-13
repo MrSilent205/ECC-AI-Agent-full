@@ -11,7 +11,8 @@ function isCodexUserConfig(plan, operation) {
   }
   const relativePath = path.relative(plan.targetRoot, operation.destinationPath);
   const name = process.platform === 'win32' ? relativePath.toLowerCase() : relativePath;
-  return name === 'config.toml' || name === (process.platform === 'win32' ? 'agents.md' : 'AGENTS.md');
+  return name === 'config.toml' || name === 'strict.config.toml' || name === 'yolo.config.toml'
+    || name === (process.platform === 'win32' ? 'agents.md' : 'AGENTS.md');
 }
 
 function readConfigDigest(plan, destinationPath) {
