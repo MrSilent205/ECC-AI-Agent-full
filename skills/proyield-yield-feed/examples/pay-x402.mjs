@@ -17,9 +17,12 @@
 //     (PROYIELD_ALLOWED_PAY_TO) so a hostile resource server cannot substitute them
 //   * a 2xx whose body cannot be read is reported as a read failure — a failed
 //     read never degrades into an empty object that looks like data
-//   * a non-OK response from a free read (the index, the stats tally) is thrown
-//     with its HTTP status — a 429/5xx is an error, never an empty object or an
-//     error payload handed to the caller as a reading
+//   * a non-OK response from a required free read (the index) is thrown with its
+//     HTTP status — a 429/5xx is an error, never an empty object or an error
+//     payload handed to the caller as a reading
+//   * the stats tally is a cross-check, so its reads are best-effort: a 429/5xx
+//     there is reported and skipped, and can never suppress the purchase summary
+//     of a payment that already settled
 //   * the 402 challenge is read from the `PAYMENT-REQUIRED` header, and from the
 //     response body's v1 `accepts[]` (normalized) when that header is absent
 //
@@ -99,13 +102,16 @@ async function request(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
 }
 
 // For reads whose body is required: a read that produced no data is an error,
-// not an empty object — and neither is an error status. A 429/5xx from the free
-// index or the stats tally is rejected here with the HTTP status (plus the
+// not an empty object — and neither is an error status. A 429/5xx from a
+// required read (the index) is rejected here with the HTTP status (plus the
 // parsed `error`/`code` when the body carried one), so a rate-limit or an
 // upstream outage can never reach a caller as `{}` or as error JSON wearing the
 // shape of a reading. The paid retry deliberately does NOT go through this
 // helper: it reads its settlement receipt off the response and keeps its own
-// status handling (409 = already settled, never a blind retry).
+// status handling (409 = already settled, never a blind retry). The stats tally
+// is read through here too, but its own call site catches this throw (readTally)
+// — a failed cross-check is reported and skipped, never allowed to abort a
+// completed purchase.
 async function requestJson(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const { res, json, readError } = await request(url, init, timeoutMs);
   if (readError) throw new Error(readError);
@@ -119,6 +125,21 @@ async function requestJson(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
 }
 
 const anonStats = async () => (await requestJson(`${ORIGIN}/api/x402/stats`)).json;
+
+// The tally is a cross-check, never settlement evidence — `/api/x402/stats`
+// aggregates every payer, so it cannot prove that THIS call settled (§6). Its
+// reads are therefore best-effort: `requestJson()` still throws on a 429/5xx,
+// and this is the one place that catches it. A tally that cannot be read is
+// reported and the flow continues, because a failed cross-check must never
+// suppress the purchase summary of a payment that already settled.
+async function readTally() {
+  try {
+    return await anonStats();
+  } catch (err) {
+    console.warn(`tally unavailable: ${err.message} — cross-check skipped`);
+    return null;
+  }
+}
 
 // ── 1. free index: what can be paid for, at what price, on which networks ────
 
@@ -268,7 +289,7 @@ const signature = await account.signTypedData({
 
 // ── 5. retry the SAME url with PAYMENT-SIGNATURE ────────────────────────────
 
-const statsBefore = await anonStats();
+const statsBefore = await readTally(); // best-effort: a down tally must not block the payment
 const envelope = b64e({
   x402Version: 2,
   accepted: terms,
@@ -312,21 +333,30 @@ if (paidReadError) {
   );
 }
 
-// Cross-check only. The aggregate counts all payers, so a jump greater than one
-// means a concurrent payer settled in this window — note it, don't throw — and a
-// flat read is not evidence against the receipt we just validated.
-const statsAfter = await anonStats();
-const delta = statsAfter.calls_settled - statsBefore.calls_settled;
-const received = statsAfter.total_received_usdc - statsBefore.total_received_usdc;
-console.log(
-  `tally cross-check ${statsBefore.calls_settled} -> ${statsAfter.calls_settled} (+${delta}, ` +
-    `${received.toFixed(3)} USDC)`
-);
-if (delta > 1) {
-  console.warn(`note: aggregate tally advanced by ${delta} — concurrent payers settled in this window`);
-}
-if (delta <= 0) {
-  console.warn("note: aggregate tally did not move in this window — aggregate reads can lag; the receipt above is this call's evidence");
+// Cross-check only, and best-effort. The aggregate counts all payers, so a jump
+// greater than one means a concurrent payer settled in this window — note it,
+// don't throw — and a flat read is not evidence against the receipt we just
+// validated. A tally read that fails (429/5xx) is reported as unavailable by
+// readTally() and the cross-check is simply skipped: the purchase summary below
+// is the point of this example and is never suppressed by it.
+const statsAfter = await readTally();
+if (!statsBefore || !statsAfter) {
+  console.warn(
+    "tally cross-check skipped: the tally was unreadable in this window — the receipt above is this call's evidence"
+  );
+} else {
+  const delta = statsAfter.calls_settled - statsBefore.calls_settled;
+  const received = statsAfter.total_received_usdc - statsBefore.total_received_usdc;
+  console.log(
+    `tally cross-check ${statsBefore.calls_settled} -> ${statsAfter.calls_settled} (+${delta}, ` +
+      `${received.toFixed(3)} USDC)`
+  );
+  if (delta > 1) {
+    console.warn(`note: aggregate tally advanced by ${delta} — concurrent payers settled in this window`);
+  }
+  if (delta <= 0) {
+    console.warn("note: aggregate tally did not move in this window — aggregate reads can lag; the receipt above is this call's evidence");
+  }
 }
 
 // The body is the resource payload. Rates are historical, sourced reads:
