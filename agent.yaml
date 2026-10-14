@@ -26,7 +26,6 @@ skills:
   - backend-patterns
   - benchmark
   - bengali-nlp
-  - yoruba-localization-testing
   - blueprint
   - browser-qa
   - bun-runtime
@@ -178,6 +177,7 @@ skills:
   - videodb
   - visa-doc-translate
   - x-api
+  - yoruba-localization-testing
 commands:
   - aside
   - astra-review
