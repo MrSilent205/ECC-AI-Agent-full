@@ -3,24 +3,50 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
 import stat
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from scripts.parser import ObservationEvent
 from scripts.scenario_generator import Scenario
 
-SANDBOX_BASE = Path("/tmp/skill-comply-sandbox")
+# Per-user base: another local user cannot pre-create or replace it in the
+# sticky temp dir, and _setup_sandbox() keeps it at mode 0700.
+SANDBOX_BASE = Path(tempfile.gettempdir()) / (
+    f"skill-comply-sandbox-{os.getuid()}" if hasattr(os, "getuid") else "skill-comply-sandbox"
+)
 ALLOWED_MODELS = frozenset({"haiku", "sonnet", "opus"})
 ALLOWED_SETUP_EXECUTABLES = frozenset({
     "git", "npm", "pip", "pip3",
     "touch", "mkdir", "cp", "mv", "echo",
     "chmod", "unzip", "tar",
 })
+# Setup commands are model output generated from the skill under test, so each
+# allowed tool is limited to its file-creating uses. These lists are allowlists
+# on purpose: git, tar, npm and pip all have options that run other programs.
+SAFE_GIT_SUBCOMMANDS = frozenset({
+    "init", "add", "commit", "checkout", "switch", "branch", "tag", "rm", "mv", "config",
+})
+SAFE_GIT_CONFIG_KEYS = frozenset({"user.name", "user.email", "init.defaultbranch", "commit.gpgsign"})
+SAFE_TAR_SHORT_FLAGS = frozenset("cxtvfzjJC")
+SAFE_TAR_LONG_OPTIONS = frozenset({
+    "--create", "--extract", "--list", "--file", "--directory", "--verbose",
+    "--gzip", "--gunzip", "--bzip2", "--xz", "--no-same-owner", "--no-same-permissions",
+})
+NPM_INSTALL_SUBCOMMANDS = frozenset({"install", "i", "add", "ci"})
+NPM_INSTALL_OPTIONS = frozenset({"-D", "--save-dev", "-E", "--save-exact", "--no-save"})
+PIP_INSTALL_OPTIONS = frozenset({"-q", "--quiet", "-U", "--upgrade"})
+# Registry package names with an optional version; no URLs, paths or git specs.
+PACKAGE_SPEC = re.compile(
+    r"(@[a-z0-9][\w.-]*/)?[A-Za-z0-9][\w.-]*(\[[\w.,-]+\])?([@=<>!~^][\w.*^~<>=!,-]*)?",
+    re.ASCII,
+)
 # Shell builtins cannot be invoked via subprocess.run; cwd is already
 # controlled by the cwd= keyword. Scenarios that include these in
 # setup_commands (a common shell-style convention) must be tolerated.
@@ -106,6 +132,8 @@ def _validate_sandbox_base() -> None:
         raise ValueError("Sandbox base must not be a symlink or directory reparse point")
     if not stat.S_ISDIR(metadata.st_mode):
         raise ValueError("Sandbox base must be a directory")
+    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+        raise ValueError("Sandbox base must be owned by the current user")
 
 
 def _safe_sandbox_dir(scenario_id: str) -> Path:
@@ -125,6 +153,9 @@ def _safe_sandbox_dir(scenario_id: str) -> Path:
 def _setup_sandbox(sandbox_dir: Path, scenario: Scenario) -> None:
     """Create sandbox directory and run setup commands."""
     _validate_sandbox_base()
+    SANDBOX_BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _validate_sandbox_base()
+    SANDBOX_BASE.chmod(0o700)
     if sandbox_dir.exists():
         shutil.rmtree(sandbox_dir)
     sandbox_dir.mkdir(parents=True)
@@ -136,15 +167,91 @@ def _setup_sandbox(sandbox_dir: Path, scenario: Scenario) -> None:
         if not parts or parts[0] in SHELL_BUILTINS:
             # Shell builtins (cd/pushd/popd) cannot run as subprocess; skip.
             continue
-        if parts[0] not in ALLOWED_SETUP_EXECUTABLES:
-            # Restrict to known-safe executables to prevent arbitrary code execution.
+        argv = _sandboxed_setup_command(parts, sandbox_dir)
+        if argv is None:
+            # Not an allowed tool, or a use of it that could run code or
+            # reach outside the sandbox.
             continue
         try:
-            subprocess.run(parts, cwd=sandbox_dir, capture_output=True)
+            subprocess.run(argv, cwd=sandbox_dir, capture_output=True)
         except FileNotFoundError:
             # Setup tool not installed in this environment; skip rather than
             # crash the whole scenario. The compliance run continues.
             continue
+
+
+def _arg_stays_in_sandbox(arg: str, sandbox_dir: Path) -> bool:
+    """True if a path-like argument resolves inside the sandbox, outside its .git."""
+    if arg.startswith("-"):
+        # Option values attached to the flag (--file=/x, -t.., -C/) are not
+        # resolved here, so refuse any that could name another directory.
+        return not any(token in arg for token in ("/", "\\", "~", ".."))
+    if arg.startswith("~"):
+        return False
+    root = sandbox_dir.resolve()
+    try:
+        relative = (root / arg).resolve().relative_to(root)
+    except ValueError:
+        return False
+    return ".git" not in {part.lower() for part in relative.parts}
+
+
+def _packages_allowed(args: list[str], options: frozenset[str]) -> bool:
+    return all(
+        arg in options or (not arg.startswith("-") and PACKAGE_SPEC.fullmatch(arg))
+        for arg in args
+    )
+
+
+def _tar_args_allowed(args: list[str]) -> bool:
+    for index, arg in enumerate(args):
+        if arg.startswith("--"):
+            if arg.split("=", 1)[0] not in SAFE_TAR_LONG_OPTIONS:
+                return False
+        elif arg.startswith("-") or index == 0:
+            # tar also reads a bare first argument as bundled flags ("tar xzf").
+            if not set(arg.removeprefix("-")) <= SAFE_TAR_SHORT_FLAGS:
+                return False
+        elif ":" in arg:
+            return False  # host:file archives run a remote shell
+    return True
+
+
+def _sandboxed_setup_command(parts: list[str], sandbox_dir: Path) -> list[str] | None:
+    """Return the argv to run for one setup command, or None to skip it.
+
+    Keeps every allowed tool, but only for uses that create files inside the
+    sandbox: no option that runs another program, no path outside the sandbox,
+    and nothing under the sandbox's .git directory (hooks, config).
+    """
+    tool, args = parts[0], parts[1:]
+    if tool not in ALLOWED_SETUP_EXECUTABLES:
+        return None
+    if not all(_arg_stays_in_sandbox(arg, sandbox_dir) for arg in args):
+        return None
+    if tool == "git":
+        # The subcommand must come first, which also rules out global
+        # options such as -c, -C, --config-env and --exec-path.
+        if not args or args[0] not in SAFE_GIT_SUBCOMMANDS:
+            return None
+        if args[0] == "config" and (len(args) != 3 or args[1].lower() not in SAFE_GIT_CONFIG_KEYS):
+            return None
+        return parts
+    if tool == "tar":
+        return parts if _tar_args_allowed(args) else None
+    if tool == "npm":
+        if args in (["init", "-y"], ["init", "--yes"]):
+            return parts
+        if args and args[0] in NPM_INSTALL_SUBCOMMANDS and _packages_allowed(args[1:], NPM_INSTALL_OPTIONS):
+            return [*parts, "--ignore-scripts"]
+        return None
+    if tool in {"pip", "pip3"}:
+        if args and args[0] == "install" and _packages_allowed(args[1:], PIP_INSTALL_OPTIONS):
+            # Wheels only (no setup.py), installed into the sandbox rather than
+            # a site dir where a .pth file would run on every Python start.
+            return [*parts, "--only-binary=:all:", "--target", str(sandbox_dir / ".pip-packages")]
+        return None
+    return parts
 
 
 def _redact_home_path(text: str) -> str:

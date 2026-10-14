@@ -39,11 +39,22 @@ def _remove_marker():
             "non_allowlisted_binary",
         ),
         (
+            ("git -c 'alias.pwn=!touch /tmp/runner_test_pwned_marker' pwn",),
+            "git_alias",
+        ),
+        (
+            ("tar --checkpoint=1 --checkpoint-action=exec='touch /tmp/runner_test_pwned_marker' -cf out.tar .",),
+            "tar_checkpoint_action",
+        ),
+        (
             ("echo hello",),
             "benign_echo",
         ),
     ],
-    ids=["python_interpreter", "path_traversal", "non_allowlisted_binary", "benign_echo"],
+    ids=[
+        "python_interpreter", "path_traversal", "non_allowlisted_binary",
+        "git_alias", "tar_checkpoint_action", "benign_echo",
+    ],
 )
 def test_setup_sandbox_blocks_dangerous_commands(setup_commands, test_id, tmp_path):
     """Invariant: _setup_sandbox must not execute disallowed commands."""
