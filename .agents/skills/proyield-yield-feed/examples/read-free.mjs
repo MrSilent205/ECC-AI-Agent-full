@@ -5,6 +5,7 @@
 //   * per-request timeout, so a rate-limited read cannot hang an agent loop
 //   * 429 honoured via Retry-After
 //   * errors[] surfaced as partial data rather than swallowed
+//   * a 2xx whose body cannot be read surfaces as an error, never as "no reading"
 //   * as_of carried alongside every rate, because as_of != generated_at
 //   * null != 0: a missing reading prints "no reading", never 0
 
@@ -22,8 +23,23 @@ async function readProYield(path, { timeoutMs = 8000 } = {}) {
       const retryAfter = Number(res.headers.get("retry-after") ?? 5);
       throw new Error(`rate limited; retry after ${retryAfter}s`);
     }
-    // A non-JSON error body (e.g. HTML from a proxy) must not hide the HTTP status.
-    const body = await res.json().catch(() => ({}));
+    // Body-read policy — a non-OK read and an OK read are not the same thing:
+    //   * non-OK: a non-JSON error body (e.g. HTML from a proxy) must not hide the
+    //     HTTP status, so the read falls back to {} and the status is thrown below.
+    //   * OK: a 2xx whose body cannot be read is a real failure. Falling back to {}
+    //     here would print "no reading" — a broken read wearing the mask of a
+    //     valid, empty answer — so it is surfaced instead.
+    let body;
+    try {
+      body = await res.json();
+    } catch (err) {
+      if (res.ok) {
+        throw new Error(
+          `response read failed: HTTP ${res.status} body was not readable JSON (${err.message})`
+        );
+      }
+      body = {};
+    }
     // Partial failures arrive as HTTP 200 with a populated errors[] array.
     if (Array.isArray(body.errors) && body.errors.length > 0) {
       console.warn("partial data:", body.errors);

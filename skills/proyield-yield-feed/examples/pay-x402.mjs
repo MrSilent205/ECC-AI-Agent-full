@@ -15,6 +15,8 @@
 //     aggregate and is used only as a cross-check, never as proof
 //   * the payTo/asset the server asks to be paid can be pinned caller-side
 //     (PROYIELD_ALLOWED_PAY_TO) so a hostile resource server cannot substitute them
+//   * a 2xx whose body cannot be read is reported as a read failure — a failed
+//     read never degrades into an empty object that looks like data
 //
 // Buyer-side protocol mechanics (spending policy, budgets, scheme registration)
 // live in the `agent-payment-x402` skill. This file is the resource-side loop.
@@ -58,8 +60,17 @@ function assertPinned(url, label) {
 
 // Every payer request is bounded with AbortController + signal, mirroring the
 // pattern in SKILL.md §5: a stalled server cannot hang the loop while a payment
-// reservation is held. The timer stays armed through the body read, and a
-// non-JSON error body is guarded so it cannot hide the HTTP status.
+// reservation is held. The timer stays armed through the body read.
+//
+// Body-read policy — a non-OK read and an OK read are not the same thing:
+//   * non-OK: a non-JSON error body (an HTML proxy page, an empty 409) must not
+//     hide the HTTP status, so it falls back to {} and the caller branches on
+//     res.status.
+//   * OK: a 2xx whose body cannot be read (timeout mid-body, non-JSON proxy page)
+//     is a real failure. It is returned as `readError` and surfaced by the
+//     caller, never degraded to {} — {} would print as "no reading" over data
+//     that never arrived, and on the paid call it could hide a discarded body
+//     behind a settlement report.
 const REQUEST_TIMEOUT_MS = 10_000;
 
 async function request(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
@@ -67,18 +78,34 @@ async function request(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
-    const json = await res.json().catch(() => ({}));
-    return { res, json };
+    try {
+      return { res, json: await res.json(), readError: null };
+    } catch (err) {
+      if (!res.ok) return { res, json: {}, readError: null };
+      return {
+        res,
+        json: null,
+        readError: `response read failed: HTTP ${res.status} body was not readable JSON (${err.message})`,
+      };
+    }
   } finally {
     clearTimeout(timer);
   }
 }
 
-const anonStats = async () => (await request(`${ORIGIN}/api/x402/stats`)).json;
+// For reads whose body is required: a read that produced no data is an error,
+// not an empty object.
+async function requestJson(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const { res, json, readError } = await request(url, init, timeoutMs);
+  if (readError) throw new Error(readError);
+  return { res, json };
+}
+
+const anonStats = async () => (await requestJson(`${ORIGIN}/api/x402/stats`)).json;
 
 // ── 1. free index: what can be paid for, at what price, on which networks ────
 
-const { json: index } = await request(`${ORIGIN}/api/agents`);
+const { json: index } = await requestJson(`${ORIGIN}/api/agents`);
 console.log(`Pro Yield paid rail — $${index.price_usd.all}/call`);
 console.log(`networks advertised: ${index.networks.map((n) => n.label).join(", ")}`);
 const payable = index.networks.find((n) => n.network === TARGET_NETWORK);
@@ -199,7 +226,7 @@ const envelope = b64e({
   payload: { signature, authorization },
   resource: challenge.resource,
 });
-const { res: paid, json: body } = await request(RESOURCE, {
+const { res: paid, json: body, readError: paidReadError } = await request(RESOURCE, {
   headers: { accept: "application/json", "PAYMENT-SIGNATURE": envelope },
   redirect: "error",
 });
@@ -215,14 +242,26 @@ console.log(`HTTP ${paid.status}${receipt ? " + PAYMENT-RESPONSE" : ""}`);
 // base64 PAYMENT-RESPONSE receipt — `success`, the settled `network`, and the
 // `transaction`. A 200 without a readable receipt is UNCONFIRMED, never success
 // (the skill's own rule, §7). The tally is read only as supporting information.
+//
+// The same rule applies to the body: a settled 200 whose body cannot be read is a
+// settlement with NO data, reported as such below — never a quiet "spent" line.
 
-if (paid.status === 409) throw new Error(body.error ?? "409 payment_replay"); // already settled: never blind-retry
-if (paid.status !== 200) throw new Error(`paid retry failed: HTTP ${paid.status}${body.error ? ` (${body.error})` : ""}`);
+if (paid.status === 409) throw new Error(body?.error ?? "409 payment_replay"); // already settled: never blind-retry
+if (paid.status !== 200) throw new Error(`paid retry failed: HTTP ${paid.status}${body?.error ? ` (${body.error})` : ""}`);
 if (!receipt) throw new Error("settlement unconfirmed: 200 without a readable PAYMENT-RESPONSE receipt");
 if (receipt.success !== true) throw new Error(`settlement unconfirmed: receipt success=${receipt.success}`);
 if (receipt.network !== terms.network) throw new Error(`receipt network ${receipt.network} ≠ signed network ${terms.network}`);
 if (!receipt.transaction) throw new Error("settlement unconfirmed: receipt carries no transaction hash");
 console.log(`settled on ${receipt.network}: ${receipt.transaction}`);
+
+// The money moved, but the thing it bought did not arrive. Report the settlement
+// (above) and flag the data as unread — the one outcome this example must never
+// print as success.
+if (paidReadError) {
+  throw new Error(
+    `${paidReadError} — settlement ${receipt.transaction} on ${receipt.network} stands, but the purchased data is UNREAD`
+  );
+}
 
 // Cross-check only. The aggregate counts all payers, so a jump greater than one
 // means a concurrent payer settled in this window — note it, don't throw — and a

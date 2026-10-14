@@ -25,9 +25,16 @@ curl -s --max-time 15 "$BASE/api/yield/positions" | sed -n '1,4p'
 
 echo
 echo "== unsigned deposit calldata (free; your wallet signs) =="
-curl -fsS --max-time 15 -X POST "$BASE/api/yield/build-tx" \
+# No -f on this demo call: a wallet under the deposit minimum answers 4xx/422 with
+# the API's coded error body, and that body is the useful part of the example. With
+# -f under `set -euo pipefail` the walkthrough would stop there and hide it. The -f
+# reads around this one already prove the API is reachable, so nothing here is fatal.
+curl -sS --max-time 15 -o /dev/null -w 'HTTP %{http_code}\n' -X POST "$BASE/api/yield/build-tx" \
   -H 'Content-Type: application/json' \
-  -d "{\"address\":\"$ADDR\",\"action\":\"deposit\",\"amount_usdc\":1}" | sed -n '1,30p'
+  -d "{\"address\":\"$ADDR\",\"action\":\"deposit\",\"amount_usdc\":1}" || true
+curl -sS --max-time 15 -X POST "$BASE/api/yield/build-tx" \
+  -H 'Content-Type: application/json' \
+  -d "{\"address\":\"$ADDR\",\"action\":\"deposit\",\"amount_usdc\":1}" | sed -n '1,30p' || true
 
 echo
 echo "== aggregate machine-payment tally (free) =="
