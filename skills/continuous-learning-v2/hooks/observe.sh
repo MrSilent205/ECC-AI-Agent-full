@@ -281,10 +281,13 @@ _SECRET_RE = re.compile(
 # end of the truncated text), GitHub tokens, AWS key IDs, and DSN passwords
 # (scheme://user:PASSWORD@host keeps scheme and user). Each branch is anchored
 # on a literal prefix and uses bounded or non-overlapping classes (#2278).
+# Tokens may follow a JSON escape (\n, \t, \uXXXX) since dict I/O is encoded
+# before scrubbing; a DSN cut by truncation before its "@" ends at \Z,
+# except a bare trailing host:port such as http://localhost:3000 (#3568).
 _SECRET_VALUE_RE = re.compile(
     r"-----BEGIN[A-Z ]{0,40}PRIVATE KEY-----[\s\S]*?(?:-----END[A-Z ]{0,40}PRIVATE KEY-----|\Z)"
-    r"|\b(?:gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255}|(?:AKIA|ASIA)[A-Z0-9]{16})\b"
-    r"""|(?<=://)([^\s:/@"\\]{1,256}:)[^\s@/"\\]{1,256}(?=@)"""
+    r"|(?:(?<![A-Za-z0-9_])|(?<=\\[bfnrt])|(?<=\\u[0-9a-fA-F]{4}))(?:gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255}|(?:AKIA|ASIA)[A-Z0-9]{16})\b"
+    r"""|(?<=://)([^\s:/@"\\]{1,256}:)(?!\d{1,5}\Z)[^\s@/"\\]{1,256}(?=@|\Z)"""
 )
 
 import signal
@@ -362,10 +365,13 @@ _SECRET_RE = re.compile(
 # end of the truncated text), GitHub tokens, AWS key IDs, and DSN passwords
 # (scheme://user:PASSWORD@host keeps scheme and user). Each branch is anchored
 # on a literal prefix and uses bounded or non-overlapping classes (#2278).
+# Tokens may follow a JSON escape (\n, \t, \uXXXX) since dict I/O is encoded
+# before scrubbing; a DSN cut by truncation before its "@" ends at \Z,
+# except a bare trailing host:port such as http://localhost:3000 (#3568).
 _SECRET_VALUE_RE = re.compile(
     r"-----BEGIN[A-Z ]{0,40}PRIVATE KEY-----[\s\S]*?(?:-----END[A-Z ]{0,40}PRIVATE KEY-----|\Z)"
-    r"|\b(?:gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255}|(?:AKIA|ASIA)[A-Z0-9]{16})\b"
-    r"""|(?<=://)([^\s:/@"\\]{1,256}:)[^\s@/"\\]{1,256}(?=@)"""
+    r"|(?:(?<![A-Za-z0-9_])|(?<=\\[bfnrt])|(?<=\\u[0-9a-fA-F]{4}))(?:gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255}|(?:AKIA|ASIA)[A-Z0-9]{16})\b"
+    r"""|(?<=://)([^\s:/@"\\]{1,256}:)(?!\d{1,5}\Z)[^\s@/"\\]{1,256}(?=@|\Z)"""
 )
 
 def scrub(val):
