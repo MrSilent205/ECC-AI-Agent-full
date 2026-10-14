@@ -9,7 +9,9 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,9 +32,20 @@ ALLOWED_SETUP_EXECUTABLES = frozenset({
 # Setup commands are model output generated from the skill under test, so each
 # allowed tool is limited to its file-creating uses. These lists are allowlists
 # on purpose: git, tar, npm and pip all have options that run other programs.
-SAFE_GIT_SUBCOMMANDS = frozenset({
-    "init", "add", "commit", "checkout", "switch", "branch", "tag", "rm", "mv", "config",
-})
+# Options each git subcommand may take. Everything else is refused: options such
+# as --template, --separate-git-dir or --exec-path can install or run hooks.
+SAFE_GIT_OPTIONS = {
+    "init": frozenset({"-q", "--quiet", "-b", "--initial-branch"}),
+    "add": frozenset({"-A", "--all", "-u", "--update", "-f", "--force", "-v", "--verbose", "--"}),
+    "commit": frozenset({"-m", "--message", "-a", "--all", "-am", "-q", "--quiet", "--allow-empty", "--no-verify"}),
+    "checkout": frozenset({"-b", "-B", "-q", "--quiet", "--"}),
+    "switch": frozenset({"-c", "-C", "--create", "-q", "--quiet"}),
+    "branch": frozenset({"-m", "-M", "-d", "-D", "-q", "--quiet"}),
+    "tag": frozenset({"-a", "-m", "--message", "-d"}),
+    "rm": frozenset({"-r", "-f", "--cached", "-q", "--quiet", "--"}),
+    "mv": frozenset({"-f", "-k", "-v", "--"}),
+    "config": frozenset(),
+}
 SAFE_GIT_CONFIG_KEYS = frozenset({"user.name", "user.email", "init.defaultbranch", "commit.gpgsign"})
 SAFE_TAR_SHORT_FLAGS = frozenset("cxtvfzjJC")
 SAFE_TAR_LONG_OPTIONS = frozenset({
@@ -173,19 +186,32 @@ def _setup_sandbox(sandbox_dir: Path, scenario: Scenario) -> None:
             # reach outside the sandbox.
             continue
         try:
-            subprocess.run(argv, cwd=sandbox_dir, capture_output=True)
+            subprocess.run(argv, cwd=sandbox_dir, capture_output=True, stdin=subprocess.DEVNULL)
         except FileNotFoundError:
             # Setup tool not installed in this environment; skip rather than
             # crash the whole scenario. The compliance run continues.
             continue
 
 
+def _attached_values(arg: str) -> list[str]:
+    """Every possible value attached to an option: -t.git, -rt.git, --directory=.git."""
+    body = arg.lstrip("-")
+    return [body[index:] for index in range(len(body))]
+
+
 def _arg_stays_in_sandbox(arg: str, sandbox_dir: Path) -> bool:
     """True if a path-like argument resolves inside the sandbox, outside its .git."""
     if arg.startswith("-"):
         # Option values attached to the flag (--file=/x, -t.., -C/) are not
-        # resolved here, so refuse any that could name another directory.
-        return not any(token in arg for token in ("/", "\\", "~", ".."))
+        # parsed per tool, so refuse any that could name another directory
+        # and check every suffix as if it were the value.
+        if any(token in arg for token in ("/", "\\", "~", "..")):
+            return False
+        return all(_path_stays_in_sandbox(value, sandbox_dir) for value in _attached_values(arg))
+    return _path_stays_in_sandbox(arg, sandbox_dir)
+
+
+def _path_stays_in_sandbox(arg: str, sandbox_dir: Path) -> bool:
     if arg.startswith("~"):
         return False
     root = sandbox_dir.resolve()
@@ -194,6 +220,62 @@ def _arg_stays_in_sandbox(arg: str, sandbox_dir: Path) -> bool:
     except ValueError:
         return False
     return ".git" not in {part.lower() for part in relative.parts}
+
+
+def _archive_member_safe(name: str) -> bool:
+    parts = re.split(r"[\\/]+", name)
+    return (
+        not name.startswith(("/", "\\"))
+        and not re.match(r"[A-Za-z]:", name)
+        and ".." not in parts
+        and ".git" not in {part.lower() for part in parts}
+    )
+
+
+def _archive_safe(path: Path) -> bool:
+    """True if path is a tar or zip archive of plain files and directories, none under .git."""
+    names: list[str] = []
+    recognized = False
+    try:
+        if tarfile.is_tarfile(path):
+            recognized = True
+            with tarfile.open(path) as archive:
+                for member in archive.getmembers():
+                    if not (member.isfile() or member.isdir()):
+                        return False  # links, devices and fifos
+                    names.append(member.name)
+        if zipfile.is_zipfile(path):
+            recognized = True
+            with zipfile.ZipFile(path) as archive:
+                for info in archive.infolist():
+                    if stat.S_ISLNK(info.external_attr >> 16):
+                        return False
+                    names.append(info.filename)
+    except (tarfile.TarError, zipfile.BadZipFile, OSError):
+        return False
+    return recognized and all(_archive_member_safe(name) for name in names)
+
+
+def _extracted_archives_safe(tool: str, args: list[str], sandbox_dir: Path) -> bool:
+    """Before tar -x or unzip runs, check the members of every archive it could read.
+
+    Any existing file named by an argument (or attached to an option) must be a
+    tar/zip archive that _archive_safe() accepts, so an unreadable format fails
+    closed instead of being extracted unchecked.
+    """
+    if tool == "tar":
+        flags = [arg for index, arg in enumerate(args) if arg[:2] != "--" and (arg[:1] == "-" or index == 0)]
+        if "--extract" not in args and not any("x" in flag for flag in flags):
+            return True
+    elif any(char in arg for arg in args for char in "*?["):
+        return False  # unzip expands wildcards in the archive name itself
+    root = sandbox_dir.resolve()
+    for arg in args:
+        for value in _attached_values(arg) if arg.startswith("-") else [arg]:
+            path = (root / value).resolve()
+            if path.is_file() and not _archive_safe(path):
+                return False
+    return True
 
 
 def _packages_allowed(args: list[str], options: frozenset[str]) -> bool:
@@ -232,11 +314,17 @@ def _sandboxed_setup_command(parts: list[str], sandbox_dir: Path) -> list[str] |
     if tool == "git":
         # The subcommand must come first, which also rules out global
         # options such as -c, -C, --config-env and --exec-path.
-        if not args or args[0] not in SAFE_GIT_SUBCOMMANDS:
+        if not args or args[0] not in SAFE_GIT_OPTIONS:
+            return None
+        allowed = SAFE_GIT_OPTIONS[args[0]]
+        if any(arg.startswith("-") and arg.split("=", 1)[0] not in allowed for arg in args[1:]):
             return None
         if args[0] == "config" and (len(args) != 3 or args[1].lower() not in SAFE_GIT_CONFIG_KEYS):
             return None
-        return parts
+        # Defense in depth: no hook runs during setup even if one slipped in.
+        return ["git", "-c", f"core.hooksPath={os.devnull}", *args]
+    if tool in {"tar", "unzip"} and not _extracted_archives_safe(tool, args, sandbox_dir):
+        return None
     if tool == "tar":
         return parts if _tar_args_allowed(args) else None
     if tool == "npm":

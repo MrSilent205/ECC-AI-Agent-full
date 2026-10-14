@@ -7,7 +7,9 @@ import os
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +20,7 @@ from scripts.runner import (
     SANDBOX_BASE,
     _parse_stream_json,
     _safe_sandbox_dir,
+    _sandboxed_setup_command,
     _setup_sandbox,
     run_scenario,
 )
@@ -324,6 +327,9 @@ class TestSetupSandboxSkipsShellBuiltins:
         assert ["cd", "ignored"] not in called_args
 
 
+_GIT = ["git", "-c", f"core.hooksPath={os.devnull}"]
+
+
 def _run_setup(sandbox: Path, *commands: str) -> list[list[str]]:
     """Run _setup_sandbox with a fake subprocess and return the argv it executed."""
     called: list[list[str]] = []
@@ -392,6 +398,17 @@ class TestSetupCommandConfinement:
         "touch -r /etc/shadow x",
         "mkdir -p /tmp/skill-comply-sandbox/x",
         "unzip a.zip -d /tmp/out",
+        # git options that install hooks or move the repository
+        "git init --template=templates",
+        "git init --separate-git-dir=gitdir",
+        "git commit --template=msg -m x",
+        "git add --chmod=+x hook",
+        # option values attached to the flag
+        "cp -r --target-directory=.git hooks",
+        "cp -r -t.git hooks",
+        "cp -rt.GIT hooks",
+        "tar -xf hooks.tar --directory=.git",
+        "unzip 'payload*'",
     ])
     def test_bypass_is_not_executed(self, tmp_path: Path, command: str) -> None:
         assert _run_setup(tmp_path / "sandbox", command) == []
@@ -400,10 +417,10 @@ class TestSetupCommandConfinement:
         ("mkdir -p src tests", ["mkdir", "-p", "src", "tests"]),
         ("touch src/__init__.py", ["touch", "src/__init__.py"]),
         ("echo hello", ["echo", "hello"]),
-        ("git add .", ["git", "add", "."]),
-        ("git commit -m 'initial commit'", ["git", "commit", "-m", "initial commit"]),
-        ("git config user.email test@example.com", ["git", "config", "user.email", "test@example.com"]),
-        ("git checkout -b feature/x", ["git", "checkout", "-b", "feature/x"]),
+        ("git add .", [*_GIT, "add", "."]),
+        ("git commit -m 'initial commit'", [*_GIT, "commit", "-m", "initial commit"]),
+        ("git config user.email test@example.com", [*_GIT, "config", "user.email", "test@example.com"]),
+        ("git checkout -b feature/x", [*_GIT, "checkout", "-b", "feature/x"]),
         ("cp src/a.py src/b.py", ["cp", "src/a.py", "src/b.py"]),
         ("mv src/a.py lib.py", ["mv", "src/a.py", "lib.py"]),
         ("chmod +x run.sh", ["chmod", "+x", "run.sh"]),
@@ -429,6 +446,41 @@ class TestSetupCommandConfinement:
     def test_absolute_path_inside_sandbox_is_allowed(self, tmp_path: Path) -> None:
         sandbox = tmp_path / "sandbox"
         assert _run_setup(sandbox, f"mkdir -p {sandbox}/src") == [["mkdir", "-p", f"{sandbox}/src"]]
+
+
+class TestArchiveMembers:
+    """tar -x / unzip only run when every member is a plain file outside .git."""
+
+    @pytest.mark.parametrize("name,ok", [
+        ("src/a.py", True),
+        (".gitignore", True),
+        (".git/hooks/pre-commit", False),
+        ("sub/.GIT/config", False),
+        ("../escape", False),
+        ("/abs", False),
+        ("a\\..\\..\\x", False),
+    ])
+    def test_member_names(self, tmp_path: Path, name: str, ok: bool) -> None:
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        with tarfile.open(sandbox / "a.tar", "w") as archive:
+            archive.addfile(tarfile.TarInfo(name))
+        with zipfile.ZipFile(sandbox / "a.zip", "w") as archive:
+            archive.writestr(name, "")
+        for command in ("tar -xf a.tar", "unzip a.zip"):
+            assert (_sandboxed_setup_command(command.split(), sandbox) is not None) is ok, command
+
+    def test_links_and_unknown_formats_are_refused(self, tmp_path: Path) -> None:
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        link = tarfile.TarInfo("inside")
+        link.type, link.linkname = tarfile.SYMTYPE, "elsewhere"
+        with tarfile.open(sandbox / "link.tar", "w") as archive:
+            archive.addfile(link)
+        (sandbox / "a.tar.zst").write_bytes(b"\x28\xb5\x2f\xfd")
+        assert _sandboxed_setup_command(["tar", "-xf", "link.tar"], sandbox) is None
+        assert _sandboxed_setup_command(["tar", "-xf", "a.tar.zst"], sandbox) is None
+        assert _sandboxed_setup_command(["tar", "-cf", "out.tar", "a.tar.zst"], sandbox) is not None
 
 
 class TestSandboxBaseOwnership:
