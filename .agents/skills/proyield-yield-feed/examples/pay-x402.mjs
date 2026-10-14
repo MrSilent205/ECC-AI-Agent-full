@@ -17,6 +17,9 @@
 //     (PROYIELD_ALLOWED_PAY_TO) so a hostile resource server cannot substitute them
 //   * a 2xx whose body cannot be read is reported as a read failure — a failed
 //     read never degrades into an empty object that looks like data
+//   * a non-OK response from a free read (the index, the stats tally) is thrown
+//     with its HTTP status — a 429/5xx is an error, never an empty object or an
+//     error payload handed to the caller as a reading
 //   * the 402 challenge is read from the `PAYMENT-REQUIRED` header, and from the
 //     response body's v1 `accepts[]` (normalized) when that header is absent
 //
@@ -96,10 +99,22 @@ async function request(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
 }
 
 // For reads whose body is required: a read that produced no data is an error,
-// not an empty object.
+// not an empty object — and neither is an error status. A 429/5xx from the free
+// index or the stats tally is rejected here with the HTTP status (plus the
+// parsed `error`/`code` when the body carried one), so a rate-limit or an
+// upstream outage can never reach a caller as `{}` or as error JSON wearing the
+// shape of a reading. The paid retry deliberately does NOT go through this
+// helper: it reads its settlement receipt off the response and keeps its own
+// status handling (409 = already settled, never a blind retry).
 async function requestJson(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const { res, json, readError } = await request(url, init, timeoutMs);
   if (readError) throw new Error(readError);
+  if (!res.ok) {
+    const payload = json && typeof json === "object" ? (json.error ?? json.code) : undefined;
+    const detail =
+      payload == null ? "" : `: ${typeof payload === "string" ? payload : JSON.stringify(payload)}`;
+    throw new Error(`HTTP ${res.status} for ${url}${detail}`);
+  }
   return { res, json };
 }
 
