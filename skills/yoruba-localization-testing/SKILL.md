@@ -53,7 +53,7 @@ A web component can use `<span lang="yo">Ẹ káàbọ̀</span>` to identify the
 From the ECC repository root:
 
 ```sh
-node --test skills/yoruba-localization-testing/examples/localization.test.mjs
+node skills/yoruba-localization-testing/examples/localization.test.mjs
 ```
 
 The test file covers six independent cases: Yoruba text, English, fallback, Unicode normalization, distinguishing tone/underdot differences, and JSON round trips. It uses only Node built-ins (Node 18+).
