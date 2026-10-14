@@ -6,6 +6,7 @@
 //   * 429 honoured via Retry-After
 //   * errors[] surfaced as partial data rather than swallowed
 //   * as_of carried alongside every rate, because as_of != generated_at
+//   * null != 0: a missing reading prints "no reading", never 0
 
 const ORIGIN = "https://pyd.fi";
 
@@ -21,7 +22,8 @@ async function readProYield(path, { timeoutMs = 8000 } = {}) {
       const retryAfter = Number(res.headers.get("retry-after") ?? 5);
       throw new Error(`rate limited; retry after ${retryAfter}s`);
     }
-    const body = await res.json();
+    // A non-JSON error body (e.g. HTML from a proxy) must not hide the HTTP status.
+    const body = await res.json().catch(() => ({}));
     // Partial failures arrive as HTTP 200 with a populated errors[] array.
     if (Array.isArray(body.errors) && body.errors.length > 0) {
       console.warn("partial data:", body.errors);
@@ -35,31 +37,35 @@ async function readProYield(path, { timeoutMs = 8000 } = {}) {
 
 const catalog = await readProYield("/api/yield/strategies");
 
-console.log(`vault      ${catalog.vault.address}  (${catalog.network.name})`);
-console.log(`share px   ${catalog.vault.share_price_usdc} USDC`);
-console.log(`assets     ${catalog.vault.total_assets_usdc} USDC`);
 console.log(
-  `caps       ${catalog.vault.caps.tvl_usdc} TVL / ` +
-    `${catalog.vault.caps.per_user_usdc} per wallet / ` +
-    `paused: ${catalog.vault.caps.deposits_paused}`
+  `vault      ${catalog.vault?.address ?? "no reading"}  (${catalog.network?.name ?? "no reading"})`
+);
+console.log(`share px   ${catalog.vault?.share_price_usdc ?? "no reading"} USDC`);
+console.log(`assets     ${catalog.vault?.total_assets_usdc ?? "no reading"} USDC`);
+console.log(
+  `caps       ${catalog.vault?.caps?.tvl_usdc ?? "no reading"} TVL / ` +
+    `${catalog.vault?.caps?.per_user_usdc ?? "no reading"} per wallet / ` +
+    `paused: ${catalog.vault?.caps?.deposits_paused ?? "no reading"}`
 );
 console.log(
-  `blend      ${catalog.blend.target_pct}% — guaranteed: ${catalog.blend.guarantee} ` +
-    `(${catalog.blend.note})`
+  `blend      ${catalog.blend?.target_pct ?? "no reading"}% — guaranteed: ` +
+    `${catalog.blend?.guarantee ?? "no reading"} (${catalog.blend?.note ?? "no reading"})`
 );
-console.log(`as_of      ${catalog.as_of}   generated_at ${catalog.generated_at}`);
-console.log(`source     ${catalog.venue_rates.source}`);
+console.log(
+  `as_of      ${catalog.as_of ?? "no reading"}   generated_at ${catalog.generated_at ?? "no reading"}`
+);
+console.log(`source     ${catalog.venue_rates?.source ?? "no reading"}`);
 
 console.log("\nsleeves (live reads, not forecasts):");
-for (const s of catalog.strategies) {
+for (const s of catalog.strategies ?? []) {
   // null means "no reading" — never print it as 0.
-  const rate = s.apy_pct === null ? "no live read" : `${s.apy_pct}%`;
-  console.log(`  ${s.kind.padEnd(9)} ${s.name.padEnd(32)} ${rate}`);
+  const rate = s.apy_pct == null ? "no live read" : `${s.apy_pct}%`;
+  console.log(`  ${(s.kind ?? "?").padEnd(9)} ${(s.name ?? "?").padEnd(32)} ${rate}`);
 }
 
 console.log("\ncurated core venues:");
-for (const r of catalog.venue_rates.core_rates) {
-  console.log(`  ${String(r.apy).padEnd(9)} ${r.chain.padEnd(10)} ${r.full}`);
+for (const r of catalog.venue_rates?.core_rates ?? []) {
+  console.log(`  ${String(r.apy ?? "no reading").padEnd(9)} ${(r.chain ?? "?").padEnd(10)} ${r.full ?? ""}`);
 }
 
 // A position read is one free call. Note the vault is a guarded beta with
@@ -67,4 +73,7 @@ for (const r of catalog.venue_rates.core_rates) {
 const pos = await readProYield(
   "/api/yield/positions?address=0x8954a73Bb36D17e4B212137Eb7B2328A1A14D1C1"
 );
-console.log(`\nposition value ${pos.vault.value_usdc} USDC · shares ${pos.vault.shares}`);
+console.log(
+  `\nposition value ${pos.vault?.value_usdc ?? "no reading"} USDC · ` +
+    `shares ${pos.vault?.shares ?? "no reading"}`
+);

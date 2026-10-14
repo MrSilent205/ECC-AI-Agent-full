@@ -45,11 +45,29 @@ function assertPinned(url, label) {
   return u;
 }
 
-const anonStats = async () => (await fetch(`${ORIGIN}/api/x402/stats`)).json();
+// Every payer request is bounded with AbortController + signal, mirroring the
+// pattern in SKILL.md §5: a stalled server cannot hang the loop while a payment
+// reservation is held. The timer stays armed through the body read, and a
+// non-JSON error body is guarded so it cannot hide the HTTP status.
+const REQUEST_TIMEOUT_MS = 10_000;
+
+async function request(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const json = await res.json().catch(() => ({}));
+    return { res, json };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const anonStats = async () => (await request(`${ORIGIN}/api/x402/stats`)).json;
 
 // ── 1. free index: what can be paid for, at what price, on which networks ────
 
-const index = await (await fetch(`${ORIGIN}/api/agents`)).json();
+const { json: index } = await request(`${ORIGIN}/api/agents`);
 console.log(`Pro Yield paid rail — $${index.price_usd.all}/call`);
 console.log(`networks advertised: ${index.networks.map((n) => n.label).join(", ")}`);
 const payable = index.networks.find((n) => n.network === TARGET_NETWORK);
@@ -58,7 +76,10 @@ if (!payable) throw new Error(`${TARGET_NETWORK} is not advertised by /api/agent
 // ── 2. fetch unpaid -> 402 challenge ────────────────────────────────────────
 
 assertPinned(RESOURCE, "resource");
-const res402 = await fetch(RESOURCE, { headers: { accept: "application/json" }, redirect: "error" });
+const { res: res402 } = await request(RESOURCE, {
+  headers: { accept: "application/json" },
+  redirect: "error",
+});
 if (res402.status !== 402) throw new Error(`expected 402, got ${res402.status}`);
 const challenge = b64d(res402.headers.get("payment-required"));
 const terms = challenge.accepts.find((a) => a.network === TARGET_NETWORK);
@@ -117,11 +138,10 @@ const envelope = b64e({
   payload: { signature, authorization },
   resource: challenge.resource,
 });
-const paid = await fetch(RESOURCE, {
+const { res: paid, json: body } = await request(RESOURCE, {
   headers: { accept: "application/json", "PAYMENT-SIGNATURE": envelope },
   redirect: "error",
 });
-const body = await paid.json();
 const receipt = paid.headers.get("payment-response");
 console.log(`HTTP ${paid.status}${receipt ? " + PAYMENT-RESPONSE" : ""}`);
 if (receipt) {
