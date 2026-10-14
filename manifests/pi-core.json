@@ -347,7 +347,8 @@
       "agent-runtime-gateway-smoke-test": "requires authenticated network gateways and remote sandbox callbacks at runtime",
       "brownfield-retrospective": "depends on the ECC specialist agent roster and spec-miner dispatch workflow; not a compact portable Pi prompt",
       "deepseek-harness-setup": "configures an external DeepSeek provider and Claude-Code-specific credentials and hook integration",
-      "story-lifecycle": "Requires ECC agent workflow handoffs and a local Node ledger; native Pi delivery has not been validated."
+      "story-lifecycle": "Requires ECC agent workflow handoffs and a local Node ledger; native Pi delivery has not been validated.",
+      "proyield-yield-feed": "venture-specific x402 payments; network runtime and live HTTP calls"
     }
   },
   "commands": {

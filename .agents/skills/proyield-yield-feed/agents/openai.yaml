@@ -1,0 +1,7 @@
+interface:
+  display_name: "Pro Yield Yield Feed"
+  short_description: "Live sourced stablecoin yield feed"
+  brand_color: "#0EA5E9"
+  default_prompt: "Use $proyield-yield-feed to read sourced stablecoin lending yields, vault caps, and daily share-price history."
+policy:
+  allow_implicit_invocation: true
