@@ -17,6 +17,8 @@
 //     (PROYIELD_ALLOWED_PAY_TO) so a hostile resource server cannot substitute them
 //   * a 2xx whose body cannot be read is reported as a read failure — a failed
 //     read never degrades into an empty object that looks like data
+//   * the 402 challenge is read from the `PAYMENT-REQUIRED` header, and from the
+//     response body's v1 `accepts[]` (normalized) when that header is absent
 //
 // Buyer-side protocol mechanics (spending policy, budgets, scheme registration)
 // live in the `agent-payment-x402` skill. This file is the resource-side loop.
@@ -112,14 +114,46 @@ const payable = index.networks.find((n) => n.network === TARGET_NETWORK);
 if (!payable) throw new Error(`${TARGET_NETWORK} is not advertised by /api/agents`);
 
 // ── 2. fetch unpaid -> 402 challenge ────────────────────────────────────────
+//
+// §6 documents two artifacts for the challenge: the base64 `PAYMENT-REQUIRED`
+// response header (v2 shape) and a JSON body with `x402Version: 1`. Prefer the
+// header, but keep the parsed body and fall back to its `accepts[]` when the
+// header is absent or unreadable — a documented body-only 402 must not die at
+// `b64d(null)` before selection or signing. The body entry is v1-shaped, so it is
+// normalized into what the signing/envelope code below expects (`maxAmountRequired`
+// -> `amount`, plus the EIP-712 `extra` and `resource` the v2 header carries)
+// rather than handed over raw as `terms`.
 
 assertPinned(RESOURCE, "resource");
-const { res: res402 } = await request(RESOURCE, {
+const { res: res402, json: body402 } = await request(RESOURCE, {
   headers: { accept: "application/json" },
   redirect: "error",
 });
 if (res402.status !== 402) throw new Error(`expected 402, got ${res402.status}`);
-const challenge = b64d(res402.headers.get("payment-required"));
+
+// The v1 body entry carries `maxAmountRequired` instead of `amount` and has no
+// `extra`, so it is converted to the v2 accept shape the signing/envelope code
+// expects: `maxAmountRequired` is consumed into `amount` (never left on `terms`),
+// the EIP-712 domain comes from the documented USDC parameters when the challenge
+// omits it (a v2 header's own `extra` always wins), and the entry's `resource`
+// fills the envelope's resource. `amount` stays a string — the cap check does the BigInt.
+const USDC_EXTRA = { name: "USD Coin", version: "2" };
+const normalizeV1Accept = ({ maxAmountRequired, amount, extra, resource, ...rest }) => ({
+  ...rest,
+  amount: String(maxAmountRequired ?? amount),
+  extra: extra ?? USDC_EXTRA,
+  resource: resource ?? RESOURCE,
+});
+
+const headerChallenge = tryB64d(res402.headers.get("payment-required"));
+const challenge = headerChallenge ?? {
+  x402Version: body402?.x402Version ?? 1,
+  resource: body402?.resource ?? RESOURCE,
+  accepts: (body402?.accepts ?? []).map(normalizeV1Accept),
+};
+if (!Array.isArray(challenge.accepts) || challenge.accepts.length === 0) {
+  throw new Error("402 carried no challenge: no readable PAYMENT-REQUIRED header and no accepts[] body");
+}
 const terms = challenge.accepts.find((a) => a.network === TARGET_NETWORK);
 if (!terms) throw new Error(`challenge does not accept ${TARGET_NETWORK}`);
 console.log(`challenge x402Version=${challenge.x402Version} · ${terms.amount} atomic units`);
