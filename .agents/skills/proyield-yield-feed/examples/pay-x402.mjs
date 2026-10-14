@@ -124,7 +124,10 @@ function assertCallerApproved(terms) {
   const payTo = String(terms.payTo).toLowerCase();
   const asset = String(terms.asset).toLowerCase();
   const approved = PAYTO_ALLOW.some((entry) => {
-    const [allowPayTo, allowAsset] = entry.toLowerCase().split("@");
+    const [allowPayTo, allowAsset] = entry
+      .toLowerCase()
+      .split("@")
+      .map((part) => part.trim());
     return allowPayTo === payTo && (!allowAsset || allowAsset === asset);
   });
   if (!approved) {
