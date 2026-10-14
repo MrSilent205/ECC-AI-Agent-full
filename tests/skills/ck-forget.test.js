@@ -76,6 +76,37 @@ test('forget refuses to remove the contexts root for a legacy empty contextDir',
   assert.ok(fs.existsSync(path.join(contextsDir(home), 'alpha', 'context.json')), 'alpha context was removed');
 });
 
+test('forget removes a legacy contextDir whose name starts with dots', home => {
+  init(home, 'alpha', path.join(home, 'projA'));
+  const projectsFile = path.join(home, '.claude', 'ck', 'projects.json');
+  const projects = JSON.parse(fs.readFileSync(projectsFile, 'utf8'));
+  projects[path.join(home, 'projB')] = { name: 'legacy', contextDir: '..archive', lastUpdated: '2026-01-01' };
+  fs.writeFileSync(projectsFile, JSON.stringify(projects));
+  const targetDir = path.join(contextsDir(home), '..archive');
+  fs.mkdirSync(targetDir);
+  fs.writeFileSync(path.join(targetDir, 'context.json'), JSON.stringify({ version: 2, sessions: [] }));
+
+  const result = run(home, 'forget.mjs', ['legacy']);
+  assert.strictEqual(result.status, 0, result.stdout + result.stderr);
+  assert.ok(!fs.existsSync(targetDir), '..archive directory was not removed');
+  assert.ok(fs.existsSync(path.join(contextsDir(home), 'alpha', 'context.json')), 'alpha context was removed');
+});
+
+test('forget refuses a legacy contextDir that escapes the contexts root', home => {
+  init(home, 'alpha', path.join(home, 'projA'));
+  const projectsFile = path.join(home, '.claude', 'ck', 'projects.json');
+  const projects = JSON.parse(fs.readFileSync(projectsFile, 'utf8'));
+  projects[path.join(home, 'projB')] = { name: 'legacy', contextDir: '../outside', lastUpdated: '2026-01-01' };
+  fs.writeFileSync(projectsFile, JSON.stringify(projects));
+  const outside = path.join(home, '.claude', 'ck', 'outside');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'context.json'), JSON.stringify({ version: 2, sessions: [] }));
+
+  const result = run(home, 'forget.mjs', ['legacy']);
+  assert.strictEqual(result.status, 1, result.stdout + result.stderr);
+  assert.ok(fs.existsSync(outside), 'directory outside the contexts root was removed');
+});
+
 console.log(`\nPassed: ${passed}`);
 console.log(`Failed: ${failed}`);
 process.exit(failed > 0 ? 1 : 0);

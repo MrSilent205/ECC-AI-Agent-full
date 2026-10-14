@@ -12,7 +12,7 @@
  */
 
 import { rmSync } from 'fs';
-import { isAbsolute, relative, resolve } from 'path';
+import { isAbsolute, relative, resolve, sep } from 'path';
 import { resolveContext, readProjects, writeProjects, CONTEXTS_DIR } from './shared.mjs';
 
 const arg = process.argv[2];
@@ -30,7 +30,7 @@ const { name, contextDir, projectPath } = resolved;
 // Remove context directory
 const contextDirPath = resolve(CONTEXTS_DIR, contextDir);
 const rel = relative(CONTEXTS_DIR, contextDirPath);
-if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
   console.log(`ck: refusing to remove '${contextDirPath}' — it is not a project directory inside ${CONTEXTS_DIR}.`);
   process.exit(1);
 }
