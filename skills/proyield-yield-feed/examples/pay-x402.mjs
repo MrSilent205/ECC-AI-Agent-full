@@ -10,7 +10,11 @@
 //   * the price is checked against a local per-call cap before anything is signed
 //   * a fresh random nonce every call, because a replay returns 409 and a
 //     same-nonce retry is not a fresh payment
-//   * settlement is confirmed against /api/x402/stats, not just the receipt header
+//   * settlement is confirmed from THIS call's PAYMENT-RESPONSE receipt
+//     (`success`, `network`, `transaction`); /api/x402/stats is an all-payer
+//     aggregate and is used only as a cross-check, never as proof
+//   * the payTo/asset the server asks to be paid can be pinned caller-side
+//     (PROYIELD_ALLOWED_PAY_TO) so a hostile resource server cannot substitute them
 //
 // Buyer-side protocol mechanics (spending policy, budgets, scheme registration)
 // live in the `agent-payment-x402` skill. This file is the resource-side loop.
@@ -36,6 +40,13 @@ const CHAIN_IDS = {
 
 const b64d = (s) => JSON.parse(Buffer.from(String(s), "base64").toString("utf8"));
 const b64e = (o) => Buffer.from(JSON.stringify(o), "utf8").toString("base64");
+const tryB64d = (s) => {
+  try {
+    return b64d(s);
+  } catch {
+    return null;
+  }
+};
 
 // ── guard rails ──────────────────────────────────────────────────────────────
 
@@ -87,11 +98,58 @@ if (!terms) throw new Error(`challenge does not accept ${TARGET_NETWORK}`);
 console.log(`challenge x402Version=${challenge.x402Version} · ${terms.amount} atomic units`);
 
 // ── 3. budget + allowlist check BEFORE signing ──────────────────────────────
+//
+// Threat model: everything in the 402 challenge — `payTo`, `asset`, `amount`,
+// `network` — is supplied by the resource server. Comparing two responses from
+// that same server is not authorization, so on its own this check lets a
+// compromised or hostile endpoint redirect the payment to a token or address
+// the caller never approved. Pin the recipients caller-side with
+// PROYIELD_ALLOWED_PAY_TO (comma-separated; `payTo` or `payTo@asset` to bind the two)
+// and the challenge simply cannot move the money anywhere else. Unset, the
+// example still runs — it is a worked example, not a wallet — but warns.
+
+const PAYTO_ALLOW = (process.env.PROYIELD_ALLOWED_PAY_TO ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+function assertCallerApproved(terms) {
+  if (PAYTO_ALLOW.length === 0) {
+    console.warn(
+      "warning: PROYIELD_ALLOWED_PAY_TO is unset — signing the payTo/asset the server sent. " +
+        "Pin them caller-side when the resource server is not trusted."
+    );
+    return;
+  }
+  const payTo = String(terms.payTo).toLowerCase();
+  const asset = String(terms.asset).toLowerCase();
+  const approved = PAYTO_ALLOW.some((entry) => {
+    const [allowPayTo, allowAsset] = entry.toLowerCase().split("@");
+    return allowPayTo === payTo && (!allowAsset || allowAsset === asset);
+  });
+  if (!approved) {
+    throw new Error(
+      `payTo ${terms.payTo} / asset ${terms.asset} is not in PROYIELD_ALLOWED_PAY_TO — refusing to sign`
+    );
+  }
+}
 
 const amount = BigInt(terms.amount);
 if (amount > PER_CALL_CAP_ATOMIC) throw new Error(`price ${amount} exceeds per-call cap`);
 const net = index.networks.find((n) => n.network === terms.network);
 if (net.asset.toLowerCase() !== terms.asset.toLowerCase()) throw new Error("asset mismatch");
+
+// This example implements the EVM (EIP-3009) signer path only. Solana is
+// advertised by the API but needs an SPL `TransferChecked` signer, which is not
+// implemented here — fail before signing rather than at the token address.
+if (!Object.hasOwn(CHAIN_IDS, terms.network)) {
+  throw new Error(
+    `${terms.network} has no signer in this example: it covers EVM networks only ` +
+      "(Solana requires an SPL TransferChecked path that is not implemented here)"
+  );
+}
+
+assertCallerApproved(terms);
 console.log(`payTo ${terms.payTo} · asset ${terms.asset} · cap ok`);
 
 // ── 4. sign a fresh EIP-3009 authorization (key never leaves the signer) ────
@@ -142,23 +200,43 @@ const { res: paid, json: body } = await request(RESOURCE, {
   headers: { accept: "application/json", "PAYMENT-SIGNATURE": envelope },
   redirect: "error",
 });
-const receipt = paid.headers.get("payment-response");
+const receiptHeader = paid.headers.get("payment-response");
+const receipt = receiptHeader ? tryB64d(receiptHeader) : null;
 console.log(`HTTP ${paid.status}${receipt ? " + PAYMENT-RESPONSE" : ""}`);
-if (receipt) {
-  const r = b64d(receipt);
-  console.log(`settled on ${r.network}: ${r.transaction}`);
-}
-if (paid.status === 409) throw new Error(body.error); // already settled: never blind-retry
 
-// ── 6. confirm independently: the server-side tally must advance by one ─────
+// ── 6. settlement evidence: this call's receipt is primary, the tally is not ─
+//
+// /api/x402/stats aggregates EVERY payer, so its delta cannot prove that this
+// call settled: a concurrent payer pushes it past one, and a failed purchase can
+// still sit inside a +1 window. The authoritative evidence is this response's own
+// base64 PAYMENT-RESPONSE receipt — `success`, the settled `network`, and the
+// `transaction`. A 200 without a readable receipt is UNCONFIRMED, never success
+// (the skill's own rule, §7). The tally is read only as supporting information.
 
+if (paid.status === 409) throw new Error(body.error ?? "409 payment_replay"); // already settled: never blind-retry
+if (paid.status !== 200) throw new Error(`paid retry failed: HTTP ${paid.status}${body.error ? ` (${body.error})` : ""}`);
+if (!receipt) throw new Error("settlement unconfirmed: 200 without a readable PAYMENT-RESPONSE receipt");
+if (receipt.success !== true) throw new Error(`settlement unconfirmed: receipt success=${receipt.success}`);
+if (receipt.network !== terms.network) throw new Error(`receipt network ${receipt.network} ≠ signed network ${terms.network}`);
+if (!receipt.transaction) throw new Error("settlement unconfirmed: receipt carries no transaction hash");
+console.log(`settled on ${receipt.network}: ${receipt.transaction}`);
+
+// Cross-check only. The aggregate counts all payers, so a jump greater than one
+// means a concurrent payer settled in this window — note it, don't throw — and a
+// flat read is not evidence against the receipt we just validated.
 const statsAfter = await anonStats();
 const delta = statsAfter.calls_settled - statsBefore.calls_settled;
+const received = statsAfter.total_received_usdc - statsBefore.total_received_usdc;
 console.log(
-  `tally ${statsBefore.calls_settled} -> ${statsAfter.calls_settled} (+${delta}, ` +
-    `${(statsAfter.total_received_usdc - statsBefore.total_received_usdc).toFixed(3)} USDC)`
+  `tally cross-check ${statsBefore.calls_settled} -> ${statsAfter.calls_settled} (+${delta}, ` +
+    `${received.toFixed(3)} USDC)`
 );
-if (delta !== 1) throw new Error("settlement not confirmed by /api/x402/stats");
+if (delta > 1) {
+  console.warn(`note: aggregate tally advanced by ${delta} — concurrent payers settled in this window`);
+}
+if (delta <= 0) {
+  console.warn("note: aggregate tally did not move in this window — aggregate reads can lag; the receipt above is this call's evidence");
+}
 
 // The body is the resource payload. Rates are historical, sourced reads:
 // as_of is when they were measured, generated_at is when this response was built.

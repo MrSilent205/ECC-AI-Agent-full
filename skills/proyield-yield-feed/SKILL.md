@@ -275,18 +275,16 @@ curl -s https://pyd.fi/api/x402/stats
   "api": "proyield-x402", "version": 2, "kind": "x402_stats",
   "as_of": "2026-10-14T03:46:00.776Z",
   "calls_settled": 11,
-  "total_received_atomic": "55000",
   "total_received_usdc": 0.055,
-  "first_settled_at": "2026-10-09T15:40:29.000Z",
-  "last_settled_at": "2026-10-14T03:45:48.000Z",
   "note": "Aggregate only — no payer addresses, resources or per-call data.",
   "errors": []
 }
 ```
 
-Read this before and after a paid call: `calls_settled` should advance by exactly
-one. That is the independent confirmation; a receipt header alone is self-reported
-by the response you already got.
+`calls_settled` is an aggregate across *every* payer, so read it as a **cross-check
+only**: a concurrent payer moves it by more than one, and a failed purchase can
+land inside a `+1` window. The evidence for *your* call is its own
+`PAYMENT-RESPONSE` receipt (§7); a `200` with no readable receipt is unconfirmed.
 
 ### 5. Free tier from JavaScript/TypeScript
 
@@ -377,8 +375,7 @@ returns `200` plus a receipt. Decoding the `PAYMENT-RESPONSE` header gives:
 }
 ```
 
-Two networks verified live end-to-end (payer 0.005000 USDC → the `payTo` address,
-receipts confirmed on-chain):
+Two networks verified live end-to-end (0.005000 USDC → the `payTo` address, receipts confirmed on-chain):
 
 | Network | Settled | Receipt |
 | --- | --- | --- |
@@ -403,23 +400,25 @@ HTTP/2 409
 
 Do not paste keys into arguments, logs, or a chat transcript. The full buyer
 implementation — spending policy, origin pinning, scheme registration — is in the
-`agent-payment-x402` skill; this is only the shape of the loop against these
-endpoints:
+`agent-payment-x402` skill; this is only the loop's shape against these endpoints:
 
 1. `GET https://pyd.fi/api/agents` — free index; read prices and networks.
 2. `GET <resource>` with no payment header → `402`; decode `PAYMENT-REQUIRED` (or
    read the body's `accepts[]`) and pick one entry by `network`.
-3. Check it against your own budget and allowlist: origin is exactly
-   `https://pyd.fi`, `payTo` matches the challenge, `maxAmountRequired` is within
-   your per-call cap. Abort otherwise.
+3. Check it against your own budget and **caller-held pinning**: origin is exactly
+   `https://pyd.fi`, `maxAmountRequired` is within your per-call cap, and `payTo`
+   plus `asset` match values *you* hold — the challenge is server-controlled input,
+   so a compromised endpoint can substitute either and still look consistent.
 4. Sign a **fresh** EIP-3009 `TransferWithAuthorization` for EVM (or an SPL
-   `TransferChecked` for Solana) with a new random nonce. The key stays in your
-   signer — never in a header, a query string, or a log line.
+   `TransferChecked` for Solana; `examples/pay-x402.mjs` implements EVM only) with
+   a new random nonce. The key stays in your signer — never in a header, a query
+   string, or a log line.
 5. Retry the **same URL** with `PAYMENT-SIGNATURE` and the envelope. Expect `200`
    plus `PAYMENT-RESPONSE`.
-6. Confirm independently: `/api/x402/stats` should show `calls_settled` +1. Treat a
-   missing receipt as unsettled — and never blind-retry a signed payload, since a
-   replay returns `409` and a same-nonce retry is not a fresh payment.
+6. Confirm from that response's own `PAYMENT-RESPONSE` receipt (`success`,
+   `network`, `transaction`); use `/api/x402/stats` only as a cross-check. A
+   missing receipt is unsettled — and never blind-retry a signed payload: a replay
+   returns `409` and a same-nonce retry is not a fresh payment.
 
 ## Anti-Patterns
 
@@ -443,11 +442,10 @@ can carry venue rates measured hours earlier. Quote `as_of` when you quote a rat
 an argument list, a `console.log`, or a summary you send back to a user. Signing
 happens in a signer; the API only ever sees a signature and an authorization.
 
-**Do not blind-retry a paid call.** `409 payment_replay` means the authorization
-was already used and retrying the same bytes can never succeed. A network timeout
-after signing is ambiguous — check `/api/x402/stats` and the receipt hash before
-assuming a loss, and reserve the worst case in your budget until settlement is
-confirmed.
+**Do not blind-retry a paid call.** `409 payment_replay` means the authorization was
+already used — the same bytes can never succeed. A timeout after signing is
+ambiguous: check the receipt before assuming a loss, and reserve the worst case in
+your budget until settlement is confirmed.
 
 **Do not hardcode one network or one facilitator.** `accepts[]` is the source of
 truth for what is payable now; `x402.org` is testnet-only, so mainnet Solana and
@@ -482,6 +480,9 @@ it to tell a user what return they will get.
   challenge is payable; only `pyd.fi` resources are in scope. Reject redirects,
   use absolute URLs, and set a timeout so a paid call cannot hang while a
   reservation is held.
+- **Pin `payTo` (and the `asset`) caller-side when the resource server is not
+  trusted.** The challenge is server-controlled input; compare `payTo`/`asset`
+  against addresses you hold before signing (`PROYIELD_ALLOWED_PAY_TO` in the example).
 
 ## Related Skills
 
