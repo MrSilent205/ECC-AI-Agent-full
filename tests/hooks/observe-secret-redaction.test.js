@@ -48,25 +48,56 @@ if (process.platform === 'win32') {
   failed += 1;
 } else {
   // Synthetic canary data proves that captured credential-shaped text is masked.
-  for (const [label, content] of [
+  const canary = 'CANARY_TOKEN_abcdefghijk';
+  const pemCanary = 'MIIEcanaryPEMbodyAAAA';
+  for (const [label, content, secret = canary] of [
     ['double-quoted source', 'const apiKey = "CANARY_TOKEN_abcdefghijk";'],
     ['single-quoted source', "const password = 'CANARY_TOKEN_abcdefghijk';"],
     ['JSON credential', '{"token":"CANARY_TOKEN_abcdefghijk"}'],
-    ['nested escaped source', 'const auth = \\"CANARY_TOKEN_abcdefghijk\\";']
+    ['nested escaped source', 'const auth = \\"CANARY_TOKEN_abcdefghijk\\";'],
+    ['compound env var name', 'AWS_SECRET_ACCESS_KEY=CANARY/K7MDENG/bPxRfiCYEXAMPLEKEY',
+      'CANARY/K7MDENG/bPxRfiCYEXAMPLEKEY'],
+    ['lowercase compound name', 'aws_secret_access_key = CANARY/K7MDENG/bPxRfiCYEXAMPLEKEY',
+      'CANARY/K7MDENG/bPxRfiCYEXAMPLEKEY'],
+    ['DSN password', 'DATABASE_URL=postgres://app:CANARYdsnPassw0rd@db.internal:5432/app',
+      'CANARYdsnPassw0rd'],
+    ['PEM private key block', `-----BEGIN RSA ${'PRIVATE'} KEY-----\n${pemCanary}\n-----END RSA PRIVATE KEY-----`,
+      pemCanary],
+    ['truncated PEM private key block', `-----BEGIN OPENSSH ${'PRIVATE'} KEY-----\n${pemCanary}`, pemCanary],
+    ['GitHub classic token', `GH_PAT=${'ghp_'}CANARY${'0'.repeat(30)}`, `CANARY${'0'.repeat(30)}`],
+    ['GitHub fine-grained token', `use ${'github_pat_'}CANARY_${'1'.repeat(40)}`, `CANARY_${'1'.repeat(40)}`],
+    ['AWS access key id', `key id ${'AKIA'}CANARY0EXAMPLE00`, 'CANARY0EXAMPLE00']
   ]) {
     test(`redacts ${label} before persisting tool input`, () => {
       const records = capture('pre', { tool_name: 'Write',
         tool_input: { file_path: '/tmp/example.js', content } });
-      assert.ok(!records.includes('CANARY_TOKEN_abcdefghijk'), 'seeded credential persisted');
+      assert.ok(!records.includes(secret), 'seeded credential persisted');
       assert.ok(records.includes('[REDACTED]'));
     });
     test(`redacts ${label} before persisting structured tool output`, () => {
       const records = capture('post', { tool_name: 'Read',
         tool_input: { file_path: '/tmp/example.js' }, tool_response: { content } });
-      assert.ok(!records.includes('CANARY_TOKEN_abcdefghijk'), 'seeded credential persisted');
+      assert.ok(!records.includes(secret), 'seeded credential persisted');
       assert.ok(records.includes('[REDACTED]'));
     });
   }
+
+  // Ordinary code, URLs without credentials and SSH remotes stay readable.
+  const benign = [
+    'const tokenizer = new Tokenizer(config);',
+    'max_tokens_per_request = 4096',
+    'token_count = countTokens(text)',
+    'password_hash = hashlib.sha256(pw)',
+    'fetch(http://localhost:8080/api/v1)',
+    'git clone git@github.com:org/repo.git',
+    'https://user@example.com/path'
+  ];
+  test('keeps ordinary code and credential-free URLs unredacted', () => {
+    const records = capture('post', { tool_name: 'Read',
+      tool_input: { file_path: '/tmp/example.js' }, tool_response: { content: benign.join('\n') } });
+    for (const line of benign) assert.ok(records.includes(line), `benign text altered: ${line}`);
+    assert.ok(!records.includes('[REDACTED]'));
+  });
 }
 console.log(`Passed: ${passed}`);
 console.log(`Failed: ${failed}`);
