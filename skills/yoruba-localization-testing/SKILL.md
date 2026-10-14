@@ -60,7 +60,7 @@ The test file covers six independent cases: Yoruba text, English, fallback, Unic
 
 ## Anti-Patterns
 
-- `text.normalize('NFD').replace(/\\p{M}/gu, '')` for display text: this destroys information.
+- `text.normalize('NFD').replace(/\p{M}/gu, '')` for display text: this destroys information.
 - Replacing `ẹ` with `e`, `ọ` with `o`, or `ṣ` with `s`.
 - Assuming Yoruba speakers want a Yoruba-only UI, or translating programming identifiers.
 - Shipping auto-generated Yoruba wording without review by a competent speaker.
