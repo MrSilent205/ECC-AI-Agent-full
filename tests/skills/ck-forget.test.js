@@ -50,9 +50,16 @@ console.log('\nck forget tests:');
 test('forgetting a project with a non-ASCII name keeps other projects', home => {
   init(home, 'alpha', path.join(home, 'projA'));
   init(home, 'Проект', path.join(home, 'projB'));
+  const projectsFile = path.join(home, '.claude', 'ck', 'projects.json');
+  const { contextDir } = JSON.parse(fs.readFileSync(projectsFile, 'utf8'))[path.join(home, 'projB')];
+  const targetDir = path.join(contextsDir(home), contextDir);
+  assert.ok(fs.existsSync(targetDir), 'selected project directory was not created');
 
   const result = run(home, 'forget.mjs', ['Проект']);
   assert.strictEqual(result.status, 0, result.stdout + result.stderr);
+  assert.ok(!fs.existsSync(targetDir), 'selected project directory was not removed');
+  const projects = JSON.parse(fs.readFileSync(projectsFile, 'utf8'));
+  assert.ok(!(path.join(home, 'projB') in projects), 'selected project is still registered');
   assert.ok(fs.existsSync(path.join(contextsDir(home), 'alpha', 'context.json')), 'alpha context was removed');
 });
 
