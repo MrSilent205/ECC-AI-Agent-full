@@ -112,7 +112,6 @@ const openspecDir = path.join(projectRoot, 'openspec');
 
 const ENFORCED_RE = /<!--\s*enforced:\s*(.*?)\s*-->/g;
 const LAST_VERIFIED_RE = /^[>\s]*last\s+verified:\s*(.*)$/im;
-const DATE_RE = /(\d{4}-\d{2}-\d{2})/;
 
 /** Parse `path::symbol`; reject whitespace, absolute paths, `..`, backslashes. */
 function parseAnchor(raw) {
@@ -138,13 +137,33 @@ function parseAnchor(raw) {
   return { path: anchorPath, symbol };
 }
 
-/** Extract a validated calendar date (YYYY-MM-DD) from a `Last verified` value. */
+/**
+ * Parse a `Last verified` value as an EXACT YYYY-MM-DD calendar date.
+ *
+ * Strict on purpose: a prefix-extracting regex would accept trailing junk
+ * ("2024-03-01; rm -rf /"), and `new Date("2026-02-30")` silently rolls
+ * impossible dates over into the next month. Both would let malformed or
+ * future evidence look verified. So: full-string match, UTC round-trip of
+ * the components, and no future dates.
+ */
 function parseVerifiedDate(rawValue) {
-  const m = rawValue.match(DATE_RE);
+  const m = rawValue.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return null;
-  const time = new Date(`${m[1]}T00:00:00Z`).getTime();
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const time = Date.UTC(year, month - 1, day);
   if (Number.isNaN(time)) return null;
-  return { date: m[1], time };
+  const roundTripped = new Date(time);
+  if (
+    roundTripped.getUTCFullYear() !== year ||
+    roundTripped.getUTCMonth() !== month - 1 ||
+    roundTripped.getUTCDate() !== day
+  ) {
+    return null; // impossible date (e.g. 2026-02-30 normalized by Date)
+  }
+  if (time > Date.now()) return null; // future evidence cannot be verified
+  return { date: `${m[1]}-${m[2]}-${m[3]}`, time };
 }
 
 function isInside(base, candidate) {
@@ -336,6 +355,25 @@ function evaluateSpec(relPath, parsed) {
     return { ...base, status: 'FRESH', lastVerified: verified.date };
   }
 
+  // Repository/history availability is decided BEFORE any staleness rule:
+  // an old verification date must never downgrade "evidence unavailable" to
+  // STALE (the weight table could not repair that — STALE outranks UNVERIFIED).
+  const probe = gitProbe();
+  if (!probe.available || !probe.repo || probe.shallow) {
+    const reason = !probe.available
+      ? 'git is not available'
+      : !probe.repo
+        ? 'project root is not a git repository'
+        : 'shallow clone — history incomplete';
+    return {
+      ...base,
+      status: 'UNVERIFIED',
+      enforced,
+      lastVerified: verified.date,
+      reasons: [reason],
+    };
+  }
+
   const ageDays = (Date.now() - verified.time) / 86400000;
   const reasons = [];
   const weights = { STALE: 4, ORPHANED: 3, UNVERIFIED: 2, UNKNOWN: 1, FRESH: 0 };
@@ -351,15 +389,20 @@ function evaluateSpec(relPath, parsed) {
       reasons.push(`invalid enforced anchor "${raw}" (${anchor.reason})`);
       continue;
     }
-    if (ageDays > staleDays) {
-      bump('STALE');
-      reasons.push(`Last verified ${Math.round(ageDays)} days ago (threshold: ${staleDays} days)`);
-    }
+    // Evidence availability for THIS target comes before the age rule: an
+    // uncommitted target (no history) is UNVERIFIED no matter how old the
+    // date is — missing history is not staleness.
     const verdict = targetFreshness(anchor.path);
     if (verdict.status !== 'FRESH') {
       bump(verdict.status);
       reasons.push(`"${anchor.path}": ${verdict.reason}`);
       continue;
+    }
+    // History is complete and the target is committed: now staleness rules
+    // apply — age threshold first, then change-after-verification.
+    if (ageDays > staleDays) {
+      bump('STALE');
+      reasons.push(`Last verified ${Math.round(ageDays)} days ago (threshold: ${staleDays} days)`);
     }
     // File exists & is committed: was it changed after the verification date?
     let changed;

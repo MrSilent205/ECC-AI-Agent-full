@@ -239,6 +239,40 @@ describe('check-spec-freshness (v1, file-level)', () => {
       assert.strictEqual(spec.status, 'UNVERIFIED', JSON.stringify(spec));
     });
 
+    it('marks UNVERIFIED on trailing text after the date', () => {
+      // Strict YYYY-MM-DD only: a valid-looking prefix inside arbitrary text
+      // must not count as verified evidence.
+      writeSpec(repo, 'traildate', {
+        lastVerified: `${daysAgo(1)} reviewed and approved`,
+        anchors: ['src/lib.js::run'],
+      });
+      const result = runChecker(repo);
+      const spec = parseJson(result).specs.find((s) => s.path.includes('traildate'));
+      assert.strictEqual(spec.status, 'UNVERIFIED', JSON.stringify(spec));
+    });
+
+    it('marks UNVERIFIED on impossible calendar dates', () => {
+      // JS Date silently normalizes 2026-02-30 into March; the checker must
+      // round-trip the components and reject it.
+      writeSpec(repo, 'impossible', {
+        lastVerified: '2026-02-30',
+        anchors: ['src/lib.js::run'],
+      });
+      const result = runChecker(repo);
+      const spec = parseJson(result).specs.find((s) => s.path.includes('impossible'));
+      assert.strictEqual(spec.status, 'UNVERIFIED', JSON.stringify(spec));
+    });
+
+    it('marks UNVERIFIED on future dates', () => {
+      writeSpec(repo, 'futuredate', {
+        lastVerified: '2999-01-01',
+        anchors: ['src/lib.js::run'],
+      });
+      const result = runChecker(repo);
+      const spec = parseJson(result).specs.find((s) => s.path.includes('futuredate'));
+      assert.strictEqual(spec.status, 'UNVERIFIED', JSON.stringify(spec));
+    });
+
     it('marks ORPHANED when the enforced target file does not exist', () => {
       writeSpec(repo, 'orphaned', { lastVerified: daysAgo(1), anchors: ['src/missing.js::ghost'] });
       const result = runChecker(repo);
@@ -253,6 +287,19 @@ describe('check-spec-freshness (v1, file-level)', () => {
       const result = runChecker(repo);
       const spec = parseJson(result).specs.find((s) => s.path.includes('nohistory'));
       assert.strictEqual(spec.status, 'UNVERIFIED', JSON.stringify(spec));
+    });
+
+    it('keeps an old-date target with no git history UNVERIFIED (age must not downgrade it)', () => {
+      fs.writeFileSync(path.join(repo, 'src', 'untracked-old.js'), '// never committed\n');
+      writeSpec(repo, 'nohistory-old', {
+        lastVerified: daysAgo(400),
+        anchors: ['src/untracked-old.js::fn'],
+      });
+      const result = runChecker(repo);
+      const spec = parseJson(result).specs.find((s) => s.path.includes('nohistory-old'));
+      assert.strictEqual(spec.status, 'UNVERIFIED', JSON.stringify(spec));
+      // Note: no exit-code assertion — this shared repo intentionally
+      // accumulates STALE specs from the other verdict tests above.
     });
 
     it('marks ORPHANED when an enforced target escapes via a symlink', () => {
@@ -335,17 +382,18 @@ describe('check-spec-freshness (v1, file-level)', () => {
       const repo = track(initRepo());
       commitFile(repo, 'src/lib.js', 'v1\n', daysAgo(50), 'v1');
       const marker = path.join(repo, 'ECCDATEMARK');
-      // The date carries shell payload after a valid date prefix. The checker
-      // must only pass the extracted, validated date to git as one argv item —
-      // never hand the whole line to a shell.
+      // The date carries shell payload after a valid date prefix. The strict
+      // YYYY-MM-DD parser rejects the whole value (UNVERIFIED), and nothing
+      // from the line ever reaches a shell or git argv.
       writeSpec(repo, 'hostiledate', {
         lastVerified: `${daysAgo(50)}; touch ECCDATEMARK`,
         anchors: ['src/lib.js::run'],
       });
       const result = runChecker(repo);
       assert.strictEqual(fs.existsSync(marker), false, 'hostile date must not execute');
-      assert.ok([0, 1].includes(result.exitCode), 'must not crash on hostile date');
-      assert.doesNotThrow(() => parseJson(result));
+      assert.strictEqual(result.exitCode, 0, 'rejected date must not fail the check');
+      const spec = parseJson(result).specs.find((s) => s.path.includes('hostiledate'));
+      assert.strictEqual(spec.status, 'UNVERIFIED', JSON.stringify(spec));
     });
   });
 
@@ -399,6 +447,40 @@ describe('check-spec-freshness (v1, file-level)', () => {
       writeSpec(shallow, 'spec', { lastVerified: daysAgo(1), anchors: ['src/lib.js::run'] });
       const result = runChecker(shallow);
       const spec = parseJson(result).specs.find((s) => s.path.includes('spec'));
+      assert.ok(spec, 'expected a spec entry');
+      assert.strictEqual(spec.status, 'UNVERIFIED', JSON.stringify(spec));
+      assert.strictEqual(result.exitCode, 0, 'UNVERIFIED must not fail the check');
+    });
+
+    it('keeps an OLD-date spec UNVERIFIED on shallow history (age must not fire first)', () => {
+      const full = track(initRepo());
+      commitFile(full, 'src/lib.js', 'v1\n', daysAgo(300), 'v1');
+
+      const shallow = track(fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-shallow-old-')));
+      execFileSync('git', ['clone', '-q', '--depth', '1', `file://${full}`, shallow], {
+        stdio: 'ignore',
+      });
+
+      // 400 days ago is far past any staleDays threshold: if age were evaluated
+      // before availability, this would be STALE — the documented contract
+      // demands UNVERIFIED because the history is incomplete.
+      writeSpec(shallow, 'oldspec', { lastVerified: daysAgo(400), anchors: ['src/lib.js::run'] });
+      const result = runChecker(shallow);
+      const spec = parseJson(result).specs.find((s) => s.path.includes('oldspec'));
+      assert.ok(spec, 'expected a spec entry');
+      assert.strictEqual(spec.status, 'UNVERIFIED', JSON.stringify(spec));
+      assert.strictEqual(result.exitCode, 0, 'UNVERIFIED must not fail the check');
+    });
+  });
+
+  describe('no git available / not a repository', () => {
+    it('keeps an old-date spec UNVERIFIED outside a git repository', () => {
+      // Plain directory that was never `git init`-ed.
+      const dir = track(fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-nogit-')));
+      fs.writeFileSync(path.join(dir, 'lib.js'), '// not versioned\n');
+      writeSpec(dir, 'oldspec', { lastVerified: daysAgo(400), anchors: ['lib.js::run'] });
+      const result = runChecker(dir);
+      const spec = parseJson(result).specs.find((s) => s.path.includes('oldspec'));
       assert.ok(spec, 'expected a spec entry');
       assert.strictEqual(spec.status, 'UNVERIFIED', JSON.stringify(spec));
       assert.strictEqual(result.exitCode, 0, 'UNVERIFIED must not fail the check');
