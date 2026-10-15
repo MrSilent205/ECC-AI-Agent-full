@@ -18,6 +18,8 @@ const PLATFORM_SOURCE_PATH_OWNERS = Object.freeze({
   '.joycode': 'joycode',
   '.opencode': 'opencode',
   '.openclaw': 'openclaw',
+
+  '.pi': 'pi',
   '.codebuddy': 'codebuddy',
   '.qwen': 'qwen',
   '.zed': 'zed',

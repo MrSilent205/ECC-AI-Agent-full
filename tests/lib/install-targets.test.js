@@ -1450,6 +1450,45 @@ function runTests() {
     }
   })) passed++; else failed++;
 
+  if (test('adal adapter skips foreign Pi platform source paths', () => {
+    const repoRoot = path.join(__dirname, '..', '..');
+    const projectRoot = '/workspace/app';
+
+    const plan = planInstallTargetScaffold({
+      target: 'adal',
+      repoRoot,
+      projectRoot,
+      modules: [
+        {
+          id: 'platform-configs',
+          paths: ['.pi', '.cursor', 'rules'],
+        },
+      ],
+    });
+
+    assert.ok(
+      plan.operations.some(operation => (
+        normalizedRelativePath(operation.sourceRelativePath) === 'rules'
+        && operation.destinationPath === path.join(projectRoot, '.adal', 'rules')
+      )),
+      'Should still include non-foreign rules path (guards against empty-plan regression)'
+    );
+    assert.ok(
+      !plan.operations.some(operation => (
+        normalizedRelativePath(operation.sourceRelativePath) === '.pi'
+        || normalizedRelativePath(operation.sourceRelativePath).startsWith('.pi/')
+      )),
+      'Should skip foreign Pi platform paths'
+    );
+    assert.ok(
+      !plan.operations.some(operation => (
+        normalizedRelativePath(operation.sourceRelativePath) === '.cursor'
+        || normalizedRelativePath(operation.sourceRelativePath).startsWith('.cursor/')
+      )),
+      'Should skip foreign Cursor platform paths'
+    );
+  })) passed++; else failed++;
+
   console.log(`\nResults: Passed: ${passed}, Failed: ${failed}`);
   process.exit(failed > 0 ? 1 : 0);
 }
