@@ -58,6 +58,10 @@ const {
 } = require('./stale-operations-reconciliation');
 const { buildInstallIndex, rewriteRelativeLinks } = require('./link-rewrite');
 const { transformInstallContent } = require('./content-transform');
+const {
+  isOpenCodeConfigTemplateOperation,
+  mergeOpenCodeConfigContent,
+} = require('./opencode-config-merge');
 const { assertScriptBoundary, isScriptBoundary } = require('./opencode-script-boundary');
 
 function isMarkdownPath(filePath) {
@@ -914,12 +918,32 @@ function applyInstallPlanLocked(plan, dependencies = {}, settingsLockHeld = fals
           operation,
           fs.readFileSync(operation.sourcePath, 'utf8')
         );
-        const installedContent = needsLinkRewrite
+        let installedContent = needsLinkRewrite
           ? rewriteRelativeLinks(transformed, {
             sourceRel: operation.sourceRelativePath,
             index: linkIndex,
           })
           : transformed;
+        // #3559: the OpenCode config template carries the user's live
+        // opencode.json. Merge the transformed template into the existing
+        // document instead of overwriting it, so user-owned keys survive
+        // installs, reinstalls and repairs. Destinations ECC has never
+        // recorded keep the user's own plugin registrations; recorded ones
+        // follow the template so hook deactivation can remove the
+        // './plugins' entry ECC itself wrote.
+        if (isOpenCodeConfigTemplateOperation(operation)) {
+          const existingRawContent = readInstalledFileNoFollow(appliedPlan, operation);
+          const mergedContent = existingRawContent === null
+            ? null
+            : mergeOpenCodeConfigContent(existingRawContent.toString('utf8'), installedContent, {
+              preserveUserPluginEntries: !migration.previousManagedOperations.has(
+                comparablePath(operation.destinationPath)
+              ),
+            });
+          if (mergedContent !== null) {
+            installedContent = mergedContent;
+          }
+        }
         const writeOptions = getOpenCodeActivationWriteOptions(operation, activationSnapshot);
         if (writeOptions.expectedContent) {
           writeFileNoFollow(operation.destinationPath, installedContent, {
