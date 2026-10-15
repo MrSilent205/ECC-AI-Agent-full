@@ -35,8 +35,8 @@ function checked(args) {
 
 try {
   const version = agy(['--version']);
-  if (version.error?.code === 'ENOENT' || (version.status === 0 && version.stdout.trim() !== '1.2.9')) {
-    console.log(`SKIP: native plugin validation requires installed agy 1.2.9 (found ${version.stdout?.trim() || 'none'}); no download attempted.`);
+  if (version.error?.code === 'ENOENT' || (version.status === 0 && version.stdout.trim() !== '1.3.5')) {
+    console.log(`SKIP: native plugin validation requires installed agy 1.3.5 (found ${version.stdout?.trim() || 'none'}); no download attempted.`);
     console.log('Results: Passed: 0, Failed: 0');
   } else {
     assert.strictEqual(version.status, 0, version.error?.message || version.stderr);
@@ -53,11 +53,11 @@ try {
     assert.match(validation, /\[ok\]/);
     checked(['plugin', 'install', plan.targetRoot]);
     const listed = JSON.parse(checked(['plugin', 'list', '--json']));
-    const plugin = listed.imports.find(entry => entry.name === 'ecc');
+    const plugin = listed.find(entry => entry.name === 'ecc');
     assert.ok(plugin, 'Native CLI must discover ECC after explicit local import');
-    assert.ok(plugin.components.includes('hooks'), 'Native importer must register lifecycle hooks');
-    assert.ok(plugin.components.includes('mcpServers'), 'Native importer must register ECC memory');
-    console.log('PASS: agy 1.2.9 validates and imports the generated ECC plugin in a disposable HOME.');
+    assert.ok(plugin.hooks.includes('ecc-guard'), 'Native importer must register lifecycle hooks');
+    assert.ok(plugin.mcpServers.includes('ecc-memory'), 'Native importer must register ECC memory');
+    console.log('PASS: agy 1.3.5 validates and imports the generated ECC plugin in a disposable HOME.');
     console.log('NOT CHECKED: authenticated tool execution, Stop execution, and automatic IDE discovery.');
     console.log('Results: Passed: 1, Failed: 0');
   }

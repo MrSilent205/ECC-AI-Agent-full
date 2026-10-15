@@ -219,7 +219,7 @@ Run the optional native check from the ECC source checkout:
 node tests/scripts/antigravity-native-plugin.test.js
 ```
 
-The test requires an already installed **Antigravity CLI 1.2.9** and skips with an
+The test requires an already installed **Antigravity CLI 1.3.5** and skips with an
 explicit message if that version is unavailable. It does not download the CLI.
 It installs ECC into one temporary home, runs `agy plugin validate`, imports the
 local plugin into a separate disposable CLI home with `agy plugin install`, and
