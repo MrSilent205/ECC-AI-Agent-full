@@ -257,5 +257,54 @@ test('merge honors the disabled-activation transform for declined hook consent',
   assert.ok(parseJsonObjectContent('[]') === null, 'only JSON objects are mergeable');
 });
 
+test('health reports a correct merged config as unchanged and repair stays idempotent', context => {
+  const { repairInstalledStates } = require('../../scripts/lib/install-lifecycle');
+  const plan = createOpencodePlan(context);
+  const operation = findConfigOperation(plan);
+  writeUserConfig(operation.destinationPath);
+  applyInstallPlan(plan);
+
+  // The installed merged config matches the recorded digest byte for byte.
+  // Health must recognize it as unchanged — the deactivating transform's
+  // expectation is the merged document, not the bare transformed template —
+  // so repair has nothing to rewrite and never reports drift again.
+  const first = repairInstalledStates({ ...context, targets: ['opencode'] });
+  assert.strictEqual(first.summary.errorCount, 0);
+  assert.strictEqual(first.results[0].status, 'ok',
+    'a correct merged config must not be reported as drifted');
+  assert.deepStrictEqual(first.results[0].repairedPaths, [],
+    'a correct merged config must not be rewritten');
+
+  const second = repairInstalledStates({ ...context, targets: ['opencode'] });
+  assert.strictEqual(second.summary.errorCount, 0);
+  assert.strictEqual(second.results[0].status, 'ok',
+    'repair must stay idempotent for a merged config');
+  assert.deepStrictEqual(second.results[0].repairedPaths, [],
+    'an already-correct merged config must not be rewritten again');
+});
+
+test('uninstall keeps user edits after a repair rewrote a drifted merged config', context => {
+  const { repairInstalledStates } = require('../../scripts/lib/install-lifecycle');
+  const plan = createOpencodePlan(context);
+  const operation = findConfigOperation(plan);
+  writeUserConfig(operation.destinationPath);
+  applyInstallPlan(plan);
+
+  const edited = readConfig(operation.destinationPath);
+  edited.model = 'user/edited-after-install';
+  fs.writeFileSync(operation.destinationPath, `${JSON.stringify(edited, null, 2)}\n`);
+
+  const result = repairInstalledStates({ ...context, targets: ['opencode'] });
+  assert.strictEqual(result.summary.errorCount, 0);
+  assert.strictEqual(readConfig(operation.destinationPath).model, 'user/edited-after-install',
+    'repair must merge the template into the user-edited config');
+
+  const uninstallResult = uninstallInstalledStates({ ...context, targets: ['opencode'] });
+  assert.strictEqual(uninstallResult.summary.errorCount, 0);
+  assert.strictEqual(readConfig(operation.destinationPath).model, 'user/edited-after-install',
+    'uninstall must not treat the repaired merged config as installer-owned bytes and restore stale content');
+  assert.ok(readConfig(operation.destinationPath).mcp, 'user keys must remain after uninstall');
+});
+
 console.log(`Results: Passed: ${passed}, Failed: ${failed}`);
 process.exitCode = failed ? 1 : 0;

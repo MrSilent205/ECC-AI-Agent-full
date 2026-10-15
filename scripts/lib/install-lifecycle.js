@@ -244,6 +244,17 @@ function fileMatchesRecordedContent(filePath, operation) {
   }
 }
 
+// #3559: the merged OpenCode config activates ECC's hooks by carrying the
+// './plugins' registration. A deactivating plan expects that registration to
+// be gone, so its presence means the transition has not happened yet — the
+// recorded digest proves ownership, not completion of that transition.
+function openCodeConfigStillActivatesHooks(liveRawContent) {
+  const liveValue = parseJsonObjectContent(liveRawContent);
+  return liveValue !== null
+    && Array.isArray(liveValue.plugin)
+    && liveValue.plugin.includes('./plugins');
+}
+
 function isMarkdownPath(filePath) {
   return /\.(md|mdx|markdown)$/i.test(String(filePath || ''));
 }

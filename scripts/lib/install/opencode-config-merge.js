@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { isDeepStrictEqual } = require('util');
 
 const { deepMergeJson, formatJson, isPlainObject } = require('./json-ops');
 
@@ -98,8 +99,35 @@ function mergeOpenCodeConfigContent(existingRawContent, incomingRawContent, opti
   return formatJson(mergedValue);
 }
 
+// An empty `plugin` array activates nothing, so a document that omits the key
+// and one that carries `plugin: []` describe the same configuration state:
+// the unrecorded merge omits the key, the recorded merge writes `[]`.
+function normalizeEmptyPluginKey(value) {
+  if (!isPlainObject(value) || !Array.isArray(value.plugin) || value.plugin.length > 0) {
+    return value;
+  }
+  const { plugin: _emptyPlugin, ...rest } = value;
+  return rest;
+}
+
+// Desired state for the merged OpenCode config is "ECC's keys match the
+// (transformed) template, user keys are arbitrary" — not byte equality with
+// the template. The live document matches exactly when merging the template
+// into it changes nothing. Non-object documents fall back to a byte compare.
+function mergedOpenCodeConfigMatchesDesiredState(liveRawContent, expectedTemplateContent) {
+  const liveValue = parseJsonObjectContent(liveRawContent);
+  const templateValue = parseJsonObjectContent(expectedTemplateContent);
+  if (liveValue === null || templateValue === null) {
+    return liveRawContent === expectedTemplateContent;
+  }
+  const live = normalizeEmptyPluginKey(liveValue);
+  const template = normalizeEmptyPluginKey(templateValue);
+  return isDeepStrictEqual(deepMergeJson(live, template), live);
+}
+
 module.exports = {
   isOpenCodeConfigTemplateOperation,
+  mergedOpenCodeConfigMatchesDesiredState,
   mergeOpenCodeConfigContent,
   parseJsonObjectContent,
   readExistingConfigContent,
