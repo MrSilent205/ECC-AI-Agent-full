@@ -89,14 +89,14 @@ Check what is already available before proposing anything new:
 | Path | When it fits | Notes |
 |---|---|---|
 | A publishing MCP server already connected (check the session's tools) | the user already uses a scheduler or publisher | Examples: `social-publisher` (SocialClaw), PostWire (`https://postwire.io/api/mcp`, OAuth), or the MCP or API of a scheduler the user already pays for. These use their own approved platform apps, so the user registers no developer app. Respect the tool's plan limits and approval states; never split posts across accounts to get around a limit. |
-| Official platform APIs | the user has their own developer apps | YouTube Data API `videos.insert` (Google Cloud project, OAuth, quota; unverified projects upload as private). TikTok Content Posting API (an unaudited client can only post privately; query `creator_info` for allowed privacy levels and the max duration first). Instagram Graph API (professional account; create a `REELS` container, wait until its status is `FINISHED`, then `media_publish`). |
+| Official platform APIs | the user has their own developer apps | YouTube Data API `videos.insert` (Google Cloud project, OAuth, quota; unverified projects upload as private). TikTok Content Posting API (an unaudited client can only post privately; query `creator_info` for allowed privacy levels and the max duration first). Instagram Graph API (professional account; create a `REELS` container from a public `video_url`, or for a local file create a resumable-upload container and send the bytes to the returned upload URI; wait until its status is `FINISHED`, then `media_publish`). |
 | Manual upload sheet | no tool or app is connected, or the user prefers to post by hand | Hand back the file path plus a per-platform sheet (caption, title, privacy, disclosures, time) to paste in the apps. |
 
 Publish in this order unless the user wants otherwise: the platform where the user's audience is largest first, then the rest. Scheduled posts: confirm the timezone once; never assume UTC.
 
 ### Step 6: Verify and Report
 
-TikTok and Instagram process video after upload, so the first response often has no public link. Poll the tool's or API's status call until each post is live or failed, then report:
+A scheduled post is done once the tool confirms it is queued: report the confirmed time and timezone right away, without polling. TikTok and Instagram process video after an immediate upload, so the first response often has no public link. Poll the tool's or API's status call for those posts for a few minutes at most, then report:
 
 - one line per platform: status, privacy, link
 - anything still processing, with how to check it later
