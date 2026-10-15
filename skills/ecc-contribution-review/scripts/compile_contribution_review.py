@@ -12,66 +12,42 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-
 ROLES = {
-    "canonical-skill",
-    "install-manifest",
-    "agents-mirror",
-    "cursor-mirror",
-    "codex-metadata",
-    "unit-test",
+    "canonical-skill", "install-manifest",
+    "agents-mirror", "cursor-mirror",
+    "codex-metadata", "unit-test",
 }
 HARNESSES = {"claude", "codex", "cursor"}
 GATES = {
-    "strict-skill-frontmatter",
-    "install-manifests",
-    "catalog-sync",
-    "command-registry",
-    "harness-adapters",
-    "unicode-safety",
-    "no-personal-paths",
-    "test-and-coverage",
+    "strict-skill-frontmatter", "install-manifests",
+    "catalog-sync", "command-registry",
+    "harness-adapters", "unicode-safety",
+    "no-personal-paths", "test-and-coverage",
 }
 FAILURES = {
-    "generated-root-as-canonical",
-    "missing-manifest-entry",
-    "harness-content-drift",
-    "catalog-count-drift",
-    "stale-command-registry",
-    "missing-red-test",
-    "coverage-regression",
-    "secret-in-diff",
-    "personal-path-in-diff",
-    "unsafe-hook-permission",
-    "breaking-change-unmarked",
-    "commit-before-gates",
+    "generated-root-as-canonical", "missing-manifest-entry",
+    "harness-content-drift", "catalog-count-drift",
+    "stale-command-registry", "missing-red-test",
+    "coverage-regression", "secret-in-diff",
+    "personal-path-in-diff", "unsafe-hook-permission",
+    "breaking-change-unmarked", "commit-before-gates",
 }
-FAILURE_OUTCOMES = {
-    "generated-root-as-canonical": "reject",
-    "missing-manifest-entry": "hold",
-    "harness-content-drift": "hold",
-    "catalog-count-drift": "hold",
-    "stale-command-registry": "hold",
-    "missing-red-test": "hold",
-    "coverage-regression": "hold",
-    "secret-in-diff": "reject",
-    "personal-path-in-diff": "reject",
-    "unsafe-hook-permission": "reject",
-    "breaking-change-unmarked": "hold",
-    "commit-before-gates": "reject",
+FAILURE_OUTCOMES: dict[Any, str] = {
+    "generated-root-as-canonical": "reject", "missing-manifest-entry": "hold",
+    "harness-content-drift": "hold", "catalog-count-drift": "hold",
+    "stale-command-registry": "hold", "missing-red-test": "hold",
+    "coverage-regression": "hold", "secret-in-diff": "reject",
+    "personal-path-in-diff": "reject", "unsafe-hook-permission": "reject",
+    "breaking-change-unmarked": "hold", "commit-before-gates": "reject",
 }
 RUNNERS = {
-    "resolve-canonical-surface",
-    "compile-change-plan",
-    "run-red-green-refactor",
-    "reconcile-harness-parity",
-    "reconcile-catalog-and-manifests",
-    "run-security-and-validation-gates",
+    "resolve-canonical-surface", "compile-change-plan",
+    "run-red-green-refactor", "reconcile-harness-parity",
+    "reconcile-catalog-and-manifests", "run-security-and-validation-gates",
     "prepare-commit-proposal",
 }
 AUTHORITY_FIELDS = {
-    "mayWriteSourceFiles",
-    "mayExecuteTests",
+    "mayWriteSourceFiles", "mayExecuteTests",
     "mayUpdateCatalog",
     "mayCommit",
     "mayPush",
@@ -306,7 +282,7 @@ def _validate(observation: Any) -> tuple[list[dict[str, Any]], list[dict[str, An
         for item in artifacts
         if isinstance(item, dict)
     }
-    expected_roles = {
+    expected_roles: dict[Any, str] = {
         "claude": "canonical-skill",
         "codex": "agents-mirror",
         "cursor": "cursor-mirror",
@@ -632,7 +608,7 @@ def compile_contract(
     change_intent = mapping("changeIntent")
     repo_identity = mapping("repoIdentity")
     checkpoint = mapping("checkpointContract")
-    output_receipt = {
+    output_receipt: dict[str, Any] = {
         "sourceFilesWritten": False,
         "capsuleFileWritten": capsule_file_written,
         "testsExecuted": False,
@@ -644,7 +620,7 @@ def compile_contract(
         "canonicalMemoryWritten": False,
         "semanticCommitted": False,
     }
-    artifact = {
+    artifact: dict[str, Any] = {
         "artifactType": "ecc-cross-harness-contribution-review-packet",
         "schemaVersion": "1.0.0",
         "artifactId": "ecc-contribution-review-packet",
@@ -793,13 +769,18 @@ def main() -> int:
             args.observation.read_text(encoding="utf-8"),
             parse_constant=reject_nonstandard_json_number,
         )
-    except (OSError, UnicodeError, ValueError) as error:
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
         print(f"error: cannot read observation JSON: {error}", file=sys.stderr)
         return 2
 
     capsule_written = args.output is not None
-    packet = compile_contract(observation, args.observation, capsule_file_written=capsule_written)
-    rendered = json.dumps(packet, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    try:
+        packet = compile_contract(observation, args.observation, capsule_file_written=capsule_written)
+        rendered = json.dumps(packet, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        rendered.encode("utf-8")
+    except (UnicodeError, ValueError, RecursionError) as error:
+        print(f"error: cannot compile observation JSON: {error}", file=sys.stderr)
+        return 2
     if args.output is None:
         print(rendered, end="")
     else:

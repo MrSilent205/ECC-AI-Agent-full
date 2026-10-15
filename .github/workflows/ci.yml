@@ -376,6 +376,31 @@ jobs:
       - name: Run supply-chain IOC scan
         run: npm run security:ioc-scan
 
+      - name: Setup Python for contribution security checks
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install contribution security tools
+        run: python -m pip install bandit==1.9.4 pytest==9.1.1 pyyaml==6.0.3
+
+      - name: Scan contribution compiler security
+        run: python -m bandit -r skills/ecc-contribution-review/scripts -f json -o security-bandit.json
+
+      - name: Test contribution security boundaries
+        if: success() || failure()
+        run: python -m pytest skills/ecc-contribution-review/tests/test_security_regression.py -q --junitxml=security-regression.xml
+
+      - name: Upload contribution security evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: contribution-security-evidence
+          path: |
+            security-bandit.json
+            security-regression.xml
+          if-no-files-found: error
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest

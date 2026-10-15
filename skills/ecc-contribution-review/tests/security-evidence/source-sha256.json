@@ -1,0 +1,6 @@
+{
+  "skills/ecc-contribution-review/scripts/compile_contribution_review.py": "9472a0ea390116c42b9f0e3756e0918ff30269b3f3882aa9a152a9b59646f631",
+  "skills/ecc-contribution-review/tests/test_compile_contribution_review.py": "e1fa03f08cfbdda11f16323cd9e5d57ca65d2be3489e809766476cae05e304da",
+  "skills/ecc-contribution-review/tests/test_security_regression.py": "9cc47816ebbe671bffe9148d6845b9f0a98d52ab8187ac296abb449b45631c95",
+  "skills/ecc-contribution-review/agents/openai.yaml": "f99db47056fb526ad97fd2ef376c2d879f6052e815d672940990c78dde5e801e"
+}
