@@ -41,8 +41,11 @@ claim as unverified until a reviewer checks its evidence.
    `--output` writes a new capsule file in the existing parent directory and
    refuses to overwrite any existing path. The compiler does not create
    directories, modify source files, run tests, update catalogs, commit, push,
-   or open a pull request. Exit code 0 means the packet compiled; it does not
-   mean the change passed review.
+   or open a pull request. Exit code 0 means a packet was emitted without
+   reported faults or contradictions; review is still required. Exit code 2
+   means validation faults, contradictions, or an input/output error. A
+   diagnostic packet may still be emitted with exit code 2. Inspect the packet
+   and stderr; the exit code alone does not establish whether output exists.
 
 6. Review every reported contradiction and semantic page fault. The compiler
    returns `require_review` for structurally valid input and never approves a

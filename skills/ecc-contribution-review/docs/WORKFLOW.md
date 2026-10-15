@@ -16,9 +16,12 @@
    supply chain, coverage, breaking-change status, and budgets.
 10. Compile the review packet. The compiler checks supplied claims for shape and
     internal consistency but does not verify referenced evidence or approve a
-    contribution. Exit code 0 means the packet compiled; it does not mean the
-    change passed review. Resolve every contradiction and semantic page fault
-    before preparing a commit.
+    contribution. Exit code 0 means a packet was emitted without reported
+    faults or contradictions; review is still required. Exit code 2 means
+    validation faults, contradictions, or an input/output error. A diagnostic
+    packet may still be emitted with exit code 2. Inspect the packet and stderr;
+    the exit code alone does not establish whether output exists. Resolve
+    every contradiction and semantic page fault before preparing a commit.
 11. The compiler runs no proposed runners. Obtain separate authorization
     before implementation-file, test, catalog, commit, push, PR, Control Store,
     canonical-memory, or Semantic Commit effects.
