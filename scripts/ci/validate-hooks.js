@@ -87,6 +87,13 @@ function isStringRecord(value) {
     && Object.values(value).every(item => typeof item === 'string');
 }
 
+const INLINE_ESCAPES = { '\\': '\\', '"': '"', n: '\n', t: '\t' };
+
+/** Unescape a shell double-quoted `node -e` body in one pass, so `\\n` stays a literal backslash and n. */
+function unescapeInlineJs(source) {
+  return source.replace(/\\(["\\nt])/g, (match, ch) => INLINE_ESCAPES[ch]);
+}
+
 /**
  * Compile the inline program of a `node -e "..."` command so a typo in
  * hooks.json fails validation instead of every hook invocation.
@@ -96,7 +103,7 @@ function validateInlineJs(command, label) {
   const nodeEMatch = command.match(/^node -e "((?:[^"\\]|\\.)*)"(?:\s|$)/s);
   if (!nodeEMatch) return false;
   try {
-    new vm.Script(nodeEMatch[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t'));
+    new vm.Script(unescapeInlineJs(nodeEMatch[1]));
     return false;
   } catch (syntaxErr) {
     console.error(`ERROR: ${label} has invalid inline JS: ${syntaxErr.message}`);
