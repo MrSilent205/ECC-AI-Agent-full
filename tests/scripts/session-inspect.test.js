@@ -80,6 +80,14 @@ function runTests() {
     assert.ok(result.stdout.includes('Usage:'));
   })) passed++; else failed++;
 
+  if (test('rejects missing values for every value-taking option', () => {
+    for (const flag of ['--adapter', '--target-type', '--skill', '--amendment-id', '--observations', '--write']) {
+      for (const args of [[flag], [flag, '--write', 'out.json', 'claude:latest'], [flag, 'value', flag]]) {
+        assert.throws(() => parseArgs(['node', SCRIPT, ...args]), { message: `Missing value for ${flag}` });
+      }
+    }
+  })) passed++; else failed++;
+
   if (test('lists registered adapters', () => {
     const result = run(['--list-adapters']);
     assert.strictEqual(result.code, 0, result.stderr);
@@ -167,6 +175,7 @@ function runTests() {
         ['--adapter', 'claude-history', '--write', outputPath, 'claude:latest'],
         ['--write', outputPath, 'claude:latest', '--adapter', 'claude-history'],
       ]) {
+        fs.rmSync(outputPath, { force: true });
         const result = run(args, {
           env: { HOME: homeDir, ECC_SESSION_RECORDING_DIR: outputDir }
         });
@@ -175,6 +184,11 @@ function runTests() {
         const written = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
         assert.strictEqual(written.adapterId, 'claude-history');
       }
+      fs.rmSync(outputPath, { force: true });
+      const invalid = run(['--adapter', '--write', outputPath, 'claude:latest'], { env: { HOME: homeDir } });
+      assert.strictEqual(invalid.code, 1);
+      assert.match(invalid.stderr, /Missing value for --adapter/);
+      assert.ok(!fs.existsSync(outputPath));
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
       fs.rmSync(outputDir, { recursive: true, force: true });
