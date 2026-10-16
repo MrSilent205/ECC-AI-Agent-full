@@ -11,14 +11,14 @@ These are observed local results, not an upstream CI or maintainer approval.
   no `nosec` suppressions, exit 0.
 - Python 3.14.3, pytest 9.1.1, pytest-cov 7.1.0: 38 tests passed,
   including 12 focused security tests and 8 review regression tests; compiler branch-enabled combined
-  coverage 95.78%, above the 80% gate.
+  coverage 95.79%, above the 80% gate.
 - Ruff 0.17.1: changed Python source and tests passed.
 - Mypy 2.4.0: compiler passed.
 - Workflow security validator: 13 workflows passed.
 
 Security regressions exercise rejected authority escalation, malformed input,
 malformed failure probes, non-skill labels, envelope values, impossible numeric
-claims, function/module size policy, non-finite JSON numbers, invalid UTF-8, existing-file and symlink preservation,
+claims, normal and safe-path (`-P`/`-I`) CLI invocation, function/module size policy, non-finite JSON numbers, invalid UTF-8, existing-file and symlink preservation,
 output receipt accuracy, canonical/parity record agreement, and non-execution
 of supplied runner argv. Source hashes for both compiler modules, all three test modules, and canonical
 agent metadata are verified by a security regression in CI; stale evidence fails

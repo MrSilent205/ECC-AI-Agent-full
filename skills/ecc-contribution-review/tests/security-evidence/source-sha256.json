@@ -1,8 +1,8 @@
 {
   "skills/ecc-contribution-review/agents/openai.yaml": "43a1fec439fa8ef2b1bb57f938a61df11ef78ef3c2e901038b8836868cb8e3b1",
-  "skills/ecc-contribution-review/scripts/compile_contribution_review.py": "4613e465e74b9bc70f3a9ecf78e56e6bc69e6dca4f1d657d893420a0ef20592d",
+  "skills/ecc-contribution-review/scripts/compile_contribution_review.py": "8c74b2f5aad224cdc7ba731dd7a60ba7ff9c92091f591f13b87177a62f2b763c",
   "skills/ecc-contribution-review/scripts/contribution_review_validation.py": "a69156be6608c3f9a74d68e2fa0b815e77d44e68ffafd9a183fdefadbbfd5dd3",
   "skills/ecc-contribution-review/tests/test_compile_contribution_review.py": "609e562330237f1cbd92ee500a4c2773b749c196085e6c8bef39dbc4d4c05cba",
-  "skills/ecc-contribution-review/tests/test_review_regressions.py": "358199b74e870549db755022bd4fbfbbd6583e8c27b0473ce555c0dda21abc2a",
+  "skills/ecc-contribution-review/tests/test_review_regressions.py": "956f8e7fb026a73a59226053bac167581bbf1644666824f81510396eb025f202",
   "skills/ecc-contribution-review/tests/test_security_regression.py": "7571781e3c5b2482f7734fcd6c30546ca4c97cb102382b11cda22292f9bfa647"
 }

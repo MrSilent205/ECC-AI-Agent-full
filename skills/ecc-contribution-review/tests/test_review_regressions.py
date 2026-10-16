@@ -67,14 +67,16 @@ class ReviewRegressionTests(unittest.TestCase):
             data = observation()
             data["failureProbes"] = [{"failureMode": []}]
             source.write_text(json.dumps(data))
-            result = subprocess.run(
-                [sys.executable, str(ROOT / "scripts/compile_contribution_review.py"), str(source)],
-                capture_output=True, text=True, check=False,
-            )
-            self.assertEqual(2, result.returncode)
-            self.assertEqual("", result.stderr)
-            packet = json.loads(result.stdout)
-            self.assertIn("failure_probe_coverage_failed", packet["controllerDecision"]["reasonCodes"])
+            for flags in ([], ["-P"], ["-I"]):
+                with self.subTest(flags=flags):
+                    result = subprocess.run(
+                        [sys.executable, *flags, str(ROOT / "scripts/compile_contribution_review.py"), str(source)],
+                        capture_output=True, text=True, check=False, cwd=directory,
+                    )
+                    self.assertEqual(2, result.returncode)
+                    self.assertEqual("", result.stderr)
+                    packet = json.loads(result.stdout)
+                    self.assertIn("failure_probe_coverage_failed", packet["controllerDecision"]["reasonCodes"])
 
     def test_non_skill_labels_are_rejected(self):
         for kind in ("agent", "command", "hook", "rule", "script", [], None):

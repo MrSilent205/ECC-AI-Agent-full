@@ -10,6 +10,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Resolve the bundled validator from this script, including under -P/-I.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from contribution_review_validation import (
     AUTHORITY_FIELDS,
     is_sha256,
