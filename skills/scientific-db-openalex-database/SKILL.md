@@ -29,8 +29,9 @@ For MeSH-driven biomedical searches, prefer `scientific-db-pubmed-database`.
 
 - Base URL: `https://api.openalex.org`. No key is needed to start.
 - Requests without a key share a small free daily budget per IP address. A free
-  key from <https://openalex.org/settings/api> gives your own budget. Send it as
-  `Authorization: Bearer $OPENALEX_API_KEY` (or the `api_key=` query parameter).
+  key from <https://openalex.org/settings/api> gives your own budget. Send it in
+  the `Authorization: Bearer $OPENALEX_API_KEY` header, which keeps it out of
+  URLs and logs.
 - Looking up a single work by ID or DOI is free; searches and lists cost a small
   amount of the daily budget.
 - Store keys in environment variables, never in committed files.
@@ -97,13 +98,15 @@ def abstract(inverted_index: dict | None) -> str:
     return " ".join(positions[i] for i in sorted(positions))
 
 
-def search_works(query: str, filters: str = "", per_page: int = 25) -> list[dict]:
+def search_works(query: str, filters: str = "", per_page: int = 25) -> tuple[int, list[dict]]:
+    """Return (total matching works, first page of results); log the total."""
     params = {"search": query, "per_page": per_page, "select": FIELDS}
     if filters:
         params["filter"] = filters
     response = requests.get(f"{BASE}/works", params=params, headers=headers(), timeout=30)
     response.raise_for_status()
-    return response.json()["results"]
+    data = response.json()
+    return data["meta"]["count"], data["results"]
 
 
 def get_work_by_doi(doi: str) -> dict | None:
@@ -119,7 +122,9 @@ def get_work_by_doi(doi: str) -> dict | None:
     return response.json()
 
 
-for work in search_works("kelp forest decline", "publication_year:2020-2026,open_access.is_oa:true", 5):
+count, works = search_works("kelp forest decline", "publication_year:2020-2026,open_access.is_oa:true", 5)
+print(f"{count} matching works")
+for work in works:
     venue = ((work.get("primary_location") or {}).get("source") or {}).get("display_name")
     print(work["publication_year"], work["display_name"], venue, work["doi"])
     print(abstract(work["abstract_inverted_index"])[:300])

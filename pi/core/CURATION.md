@@ -1,6 +1,6 @@
 # Curation
 
-pi/core includes 132 of 311 skills and 24 of 97 commands from the root of ECC.
+pi/core includes 132 of 312 skills and 24 of 97 commands from the root of ECC.
 Everything excluded is listed here with its reason.
 
 ## Rules
@@ -153,6 +153,7 @@ Exclude anything that:
 | `rules-distill` | Claude-Code-only rules distillation mechanics |
 | `safety-guard` | Claude-Code-only PreToolUse hooks |
 | `santa-method` | multi-agent adversarial review roster |
+| `scientific-db-openalex-database` | scientific niche domain pack |
 | `scientific-db-pubmed-database` | scientific niche domain pack |
 | `scientific-db-uspto-database` | scientific niche domain pack |
 | `scientific-pkg-gget` | scientific niche domain pack |
