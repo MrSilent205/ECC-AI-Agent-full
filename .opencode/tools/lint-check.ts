@@ -3,9 +3,11 @@
  *
  * Detects the appropriate linter and returns a runnable lint command.
  * Supports cross-platform command generation and error handling.
+ *
+ * Framework-free (OpenCode v2): registered through `ctx.tool.transform` in
+ * `plugins/index.ts`. No `@opencode-ai/plugin` import.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
 import * as path from "path"
 import * as fs from "fs"
 
@@ -20,51 +22,39 @@ interface LintResult {
   error?: string
 }
 
-const lintCheckTool: ToolDefinition = tool({
-  description:
-    "Detect linter for a target path and return command for check/fix runs. Supports cross-platform command generation.",
-  args: {
-    target: tool.schema
-      .string()
-      .optional()
-      .describe("File or directory to lint (default: current directory)"),
-    fix: tool.schema
-      .boolean()
-      .optional()
-      .describe("Enable auto-fix mode"),
-    linter: tool.schema
-      .enum(["biome", "eslint", "ruff", "pylint", "golangci-lint"])
-      .optional()
-      .describe("Optional linter override"),
-  },
-  async execute(args, context): Promise<string> {
-    try {
-      const cwd = context.worktree || context.directory
-      const target = args.target || "."
-      const fix = args.fix ?? false
-      const detected = args.linter || detectLinter(cwd)
+export interface LintCheckInput {
+  target?: string
+  fix?: boolean
+  linter?: Linter
+}
 
-      const command = buildLintCommand(detected, target, fix)
-      return JSON.stringify({
-        success: true,
-        linter: detected,
-        command,
-        instructions: `Run this command:\n\n${command}`,
-        platform: process.platform,
-        fixMode: fix,
-      })
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      return JSON.stringify({
-        success: false,
-        error: `Failed to detect linter: ${errorMessage}`,
-        target: args.target,
-      })
-    }
-  },
-})
+export const lintCheckDescription =
+  "Detect linter for a target path and return command for check/fix runs. Supports cross-platform command generation."
 
-export default lintCheckTool
+export async function executeLintCheck(args: LintCheckInput, cwd: string): Promise<string> {
+  try {
+    const target = args.target || "."
+    const fix = args.fix ?? false
+    const detected = args.linter || detectLinter(cwd)
+
+    const command = buildLintCommand(detected, target, fix)
+    return JSON.stringify({
+      success: true,
+      linter: detected,
+      command,
+      instructions: `Run this command:\n\n${command}`,
+      platform: process.platform,
+      fixMode: fix,
+    })
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    return JSON.stringify({
+      success: false,
+      error: `Failed to detect linter: ${errorMessage}`,
+      target: args.target,
+    })
+  }
+}
 
 function detectLinter(cwd: string): Linter {
   // Check for Biome config
@@ -120,3 +110,12 @@ function buildLintCommand(linter: Linter, target: string, fix: boolean): string 
 
   return commands[linter]
 }
+
+export const lintCheck = {
+  description: lintCheckDescription,
+  execute: async (rawArgs?: any, context?: any) => {
+    const cwd = context?.worktree || context?.directory || process.cwd();
+    return executeLintCheck((rawArgs ?? {}) as any, cwd);
+  },
+};
+

@@ -6,107 +6,97 @@
  *
  * NOTE: This tool SCANS for security anti-patterns - it does not introduce them.
  * The regex patterns below are used to DETECT potential issues in user code.
+ *
+ * Framework-free (OpenCode v2): registered through `ctx.tool.transform` in
+ * `plugins/index.ts`. No `@opencode-ai/plugin` import.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
 import * as path from "path"
 import * as fs from "fs"
 
-const securityAuditTool: ToolDefinition = tool({
-  description:
-    "Run a comprehensive security audit including dependency vulnerabilities, secret scanning, and common security issues.",
-  args: {
-    type: tool.schema
-      .enum(["all", "dependencies", "secrets", "code"])
-      .optional()
-      .describe("Type of audit to run (default: all)"),
-    fix: tool.schema
-      .boolean()
-      .optional()
-      .describe("Attempt to auto-fix dependency vulnerabilities (default: false)"),
-    severity: tool.schema
-      .enum(["low", "moderate", "high", "critical"])
-      .optional()
-      .describe("Minimum severity level to report (default: moderate)"),
-  },
-  async execute(args, context) {
-    const auditType = args.type ?? "all"
-    const fix = args.fix ?? false
-    const severity = args.severity ?? "moderate"
-    const cwd = context.worktree || context.directory
+export interface SecurityAuditInput {
+  type?: "all" | "dependencies" | "secrets" | "code"
+  fix?: boolean
+  severity?: "low" | "moderate" | "high" | "critical"
+}
 
-    const results: AuditResults = {
-      timestamp: new Date().toISOString(),
-      directory: cwd,
-      checks: [],
-      summary: {
-        passed: 0,
-        failed: 0,
-        warnings: 0,
-      },
-    }
+export const securityAuditDescription =
+  "Run a comprehensive security audit including dependency vulnerabilities, secret scanning, and common security issues."
 
-    // Check for dependencies audit
-    if (auditType === "all" || auditType === "dependencies") {
+export async function executeSecurityAudit(args: SecurityAuditInput, cwd: string): Promise<string> {
+  const auditType = args.type ?? "all"
+  const fix = args.fix ?? false
+  const severity = args.severity ?? "moderate"
+
+  const results: AuditResults = {
+    timestamp: new Date().toISOString(),
+    directory: cwd,
+    checks: [],
+    summary: {
+      passed: 0,
+      failed: 0,
+      warnings: 0,
+    },
+  }
+
+  // Check for dependencies audit
+  if (auditType === "all" || auditType === "dependencies") {
+    results.checks.push({
+      name: "Dependency Vulnerabilities",
+      description: "Check for known vulnerabilities in dependencies",
+      command: fix ? "npm audit fix" : "npm audit",
+      severityFilter: severity,
+      status: "pending",
+    })
+  }
+
+  // Check for secrets
+  if (auditType === "all" || auditType === "secrets") {
+    const secretPatterns = await scanForSecrets(cwd)
+    if (secretPatterns.length > 0) {
       results.checks.push({
-        name: "Dependency Vulnerabilities",
-        description: "Check for known vulnerabilities in dependencies",
-        command: fix ? "npm audit fix" : "npm audit",
-        severityFilter: severity,
-        status: "pending",
+        name: "Secret Detection",
+        description: "Scan for hardcoded secrets and API keys",
+        status: "failed",
+        findings: secretPatterns,
       })
+      results.summary.failed++
+    } else {
+      results.checks.push({
+        name: "Secret Detection",
+        description: "Scan for hardcoded secrets and API keys",
+        status: "passed",
+      })
+      results.summary.passed++
     }
+  }
 
-    // Check for secrets
-    if (auditType === "all" || auditType === "secrets") {
-      const secretPatterns = await scanForSecrets(cwd)
-      if (secretPatterns.length > 0) {
-        results.checks.push({
-          name: "Secret Detection",
-          description: "Scan for hardcoded secrets and API keys",
-          status: "failed",
-          findings: secretPatterns,
-        })
-        results.summary.failed++
-      } else {
-        results.checks.push({
-          name: "Secret Detection",
-          description: "Scan for hardcoded secrets and API keys",
-          status: "passed",
-        })
-        results.summary.passed++
-      }
+  // Check for common code security issues
+  if (auditType === "all" || auditType === "code") {
+    const codeIssues = await scanCodeSecurity(cwd)
+    if (codeIssues.length > 0) {
+      results.checks.push({
+        name: "Code Security",
+        description: "Check for common security anti-patterns",
+        status: "warning",
+        findings: codeIssues,
+      })
+      results.summary.warnings++
+    } else {
+      results.checks.push({
+        name: "Code Security",
+        description: "Check for common security anti-patterns",
+        status: "passed",
+      })
+      results.summary.passed++
     }
+  }
 
-    // Check for common code security issues
-    if (auditType === "all" || auditType === "code") {
-      const codeIssues = await scanCodeSecurity(cwd)
-      if (codeIssues.length > 0) {
-        results.checks.push({
-          name: "Code Security",
-          description: "Check for common security anti-patterns",
-          status: "warning",
-          findings: codeIssues,
-        })
-        results.summary.warnings++
-      } else {
-        results.checks.push({
-          name: "Code Security",
-          description: "Check for common security anti-patterns",
-          status: "passed",
-        })
-        results.summary.passed++
-      }
-    }
+  // Generate recommendations
+  results.recommendations = generateRecommendations(results)
 
-    // Generate recommendations
-    results.recommendations = generateRecommendations(results)
-
-    return JSON.stringify(results)
-  },
-})
-
-export default securityAuditTool
+  return JSON.stringify(results)
+}
 
 interface AuditCheck {
   name: string
@@ -277,3 +267,12 @@ function generateRecommendations(results: AuditResults): string[] {
 
   return recommendations
 }
+
+export const securityAudit = {
+  description: securityAuditDescription,
+  execute: async (rawArgs?: any, context?: any) => {
+    const cwd = context?.worktree || context?.directory || process.cwd();
+    return executeSecurityAudit((rawArgs ?? {}) as any, cwd);
+  },
+};
+

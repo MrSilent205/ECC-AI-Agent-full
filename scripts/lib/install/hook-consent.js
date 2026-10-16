@@ -90,7 +90,9 @@ function isOpenCodePluginEntrypoint(operation = {}) {
 function getDisabledOpenCodePluginContent() {
   // OpenCode discovers plugins independently of opencode.json registration.
   // Do not import the original module: even module initialization has effects.
-  return 'export default async () => ({});\n';
+  // A valid V2 module must expose an object with `id` and `setup` (not a
+  // bare async function, which the V2 loader rejects as a legacy V1 export).
+  return 'export default { id: "ecc-hooks", setup() {} };\n';
 }
 
 function isOpenCodeHookActivationOperation(operation = {}) {
@@ -190,9 +192,10 @@ function disableUnselectedOpenCodeHooks(plan) {
   }
   const runtimeSelected = planSelectsHookRuntime(plan);
   const transformOperations = operations => (Array.isArray(operations) ? operations : []).map(operation => {
-    // The source barrel is needed by the published package, but OpenCode scans
-    // plugins/index.ts and plugins/ecc-hooks.ts independently in home installs.
-    if (!runtimeSelected || normalizeOperationPath(operation.sourceRelativePath) === '.opencode/plugins/index.ts') {
+    // Only stub the plugin module when the hook runtime is not selected. With a
+    // single framework-free module there is no separate ecc-hooks.ts barrel to
+    // treat specially; index.ts itself is the plugin.
+    if (!runtimeSelected) {
       return withoutOpenCodeHookActivation(operation);
     }
     return operation;
