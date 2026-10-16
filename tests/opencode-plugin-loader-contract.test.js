@@ -23,24 +23,15 @@ const { pathToFileURL } = require('url');
 
 const { getDisabledOpenCodePluginContent } = require('../scripts/lib/install/hook-consent');
 
-function test(name, fn) {
-  try {
-    fn();
-    console.log(`  ✓ ${name}`);
-    return true;
-  } catch (err) {
-    console.log(`  ✗ ${name}`);
-    console.log(`    Error: ${err.message}`);
-    return false;
-  }
-}
-
 /** Loads generated plugin source the way the OpenCode loader does: import it. */
 async function loadPluginModule(source) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-plugin-contract-'));
-  const file = path.join(dir, 'plugin.mjs');
-  fs.writeFileSync(file, source);
-  return import(pathToFileURL(file).href);
+  try {
+    fs.writeFileSync(path.join(dir, 'plugin.mjs'), source);
+    return await import(pathToFileURL(path.join(dir, 'plugin.mjs')).href);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** Mirrors the loader schema: { default: { id, effect } | { id, setup } }. */
@@ -93,7 +84,7 @@ async function main() {
   // lands (.opencode/plugins/*.ts is scanned independently in home installs).
   // See issue #3537 and the API ports in #3536 and #3224.
 
-  console.log(`\n  ${passed} passed, ${failed} failed\n`);
+  console.log(`\nResults: Passed: ${passed}, Failed: ${failed}\n`);
   process.exit(failed === 0 ? 0 : 1);
 }
 
