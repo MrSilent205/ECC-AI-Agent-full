@@ -1,13 +1,14 @@
 ---
 name: ecc-contribution-review
-description: Prepare an ECC repository contribution for review by organizing repository, install-surface, cross-harness, validation, security, and commit observations into a local proposal. Use when preparing a skill, agent, command, hook, rule, or script contribution for review.
+description: Prepare an ECC skill contribution for review by organizing repository, install-surface, cross-harness, validation, security, and commit observations into a local proposal. Use when preparing a skill contribution for review.
 metadata:
   origin: ECC
 ---
 
-# ECC Contribution Review Packet
+# ECC Skill Contribution Review Packet
 
-Use this workflow to prepare contribution observations for maintainer review.
+Use this workflow to prepare skill contribution observations for maintainer review.
+This version supports `changeKind: "skill"` with canonical source under `skills/`.
 It compiles supplied observations; it does not independently inspect Git,
 files, CI, test results, coverage, or referenced evidence. Treat every imported
 claim as unverified until a reviewer checks its evidence.

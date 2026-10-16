@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from unittest.mock import patch
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 SPEC = importlib.util.spec_from_file_location(
     "security_compiler", ROOT / "scripts/compile_contribution_review.py"
 )
@@ -69,8 +71,10 @@ class SecurityRegressionTests(unittest.TestCase):
             str((ROOT / relative).relative_to(repo))
             for relative in (
                 "scripts/compile_contribution_review.py",
+                "scripts/contribution_review_validation.py",
                 "tests/test_compile_contribution_review.py",
                 "tests/test_security_regression.py",
+                "tests/test_review_regressions.py",
                 "agents/openai.yaml",
             )
         }

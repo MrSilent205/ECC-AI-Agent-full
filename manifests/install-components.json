@@ -505,7 +505,7 @@
     {
       "id": "skill:ecc-contribution-review",
       "family": "skill",
-      "description": "Optional contribution review packet workflow for ECC repositories.",
+      "description": "Optional skill contribution review packet workflow for ECC repositories.",
       "modules": [
         "ecc-contribution-review"
       ]

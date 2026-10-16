@@ -1,8 +1,9 @@
-# Workflow
+# Skill contribution workflow
 
 1. Resolve the active ECC checkout, non-default branch, base/head, package lock,
    manifests, catalog script, placement policy, and checkpoint.
-2. Classify the change and name its canonical surface before editing a mirror.
+2. Use `changeKind: "skill"` and name the canonical source under `skills/`
+   before editing a mirror. This version supports skill contributions only.
 3. Observe RED with named failing behaviors.
 4. Implement GREEN in the canonical surface, then REFACTOR.
 5. Update only required install manifests, documentation, and harness adapters.

@@ -3,14 +3,14 @@
     "skills": 312,
     "withTriggers": 34
   },
-  "generatedAt": "2026-10-15T21:40:37.005Z",
+  "generatedAt": "2026-10-16T14:28:25.401Z",
   "id": "skill-triggers@1",
   "model": {
     "effort": null,
     "id": "hand-seeded",
     "source": "manual-curation-pending-regeneration"
   },
-  "registryDigest": "d38a54e7c1a1b22075c20e8935d0d5bf527e6e188335c405f31a1261a2c7f2cd",
+  "registryDigest": "6562670f1b4bfe1ab99b91c0511f633401278130b517e4e12fb085d17ac103c0",
   "schemaVersion": 1,
   "triggers": {
     "skill:agent-runtime-gateway-smoke-test": [
@@ -137,10 +137,10 @@
       "multi service orchestration"
     ],
     "skill:ecc-contribution-review": [
-      "prepare ecc contribution for review",
-      "organize contribution security evidence",
-      "review cross-harness contribution observations",
-      "compile ecc contribution proposal"
+      "prepare ecc skill contribution for review",
+      "organize skill contribution security evidence",
+      "review cross-harness skill contribution observations",
+      "compile ecc skill contribution proposal"
     ],
     "skill:error-handling": [
       "error types",
@@ -297,5 +297,5 @@
       "before creating a pr"
     ]
   },
-  "triggersDigest": "21715491ba8c845552ff2e9a60da98948beb63fcf86d7e6a9ce6f8782976e942"
+  "triggersDigest": "47baf9408ee9f662289036228151a1aebcee296dd14ab12bad41168d1ccdce87"
 }

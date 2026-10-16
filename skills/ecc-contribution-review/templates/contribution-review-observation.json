@@ -18,7 +18,7 @@
   },
   "changeIntent": {
     "changeId": "REPLACE_WITH_CURRENT_OBSERVATION",
-    "changeKind": "REPLACE_WITH_CURRENT_OBSERVATION",
+    "changeKind": "skill",
     "canonicalSurface": "REPLACE_WITH_CURRENT_OBSERVATION",
     "canonicalPath": "REPLACE_WITH_CURRENT_OBSERVATION",
     "legacyCommandShimRequired": false,

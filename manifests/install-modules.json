@@ -1423,7 +1423,7 @@
     {
       "id": "ecc-contribution-review",
       "kind": "skills",
-      "description": "Optional contribution review packet workflow for ECC repositories.",
+      "description": "Optional skill contribution review packet workflow for ECC repositories.",
       "paths": [
         "skills/ecc-contribution-review"
       ],
