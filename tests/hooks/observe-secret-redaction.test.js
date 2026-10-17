@@ -126,6 +126,20 @@ if (process.platform === 'win32') {
     });
   }
 
+  // Numeric password cut right before '@' (or at end of text) must not be mistaken for host:port.
+  const numPad = (end) => 'a'.repeat(end - ' postgres://app:1234'.length) + ' postgres://app:1234';
+  for (const [label, phase, input, expectedEvent] of [
+    ['string tool output', 'post', { tool_name: 'Bash', tool_input: { command: 'env' },
+      tool_response: numPad(5000) }],
+    ['parse-error fallback', 'post', JSON.stringify([numPad(2000 - 2)]), 'parse_error']
+  ]) {
+    test(`redacts numeric DSN password cut at the truncation boundary in ${label}`, () => {
+      const records = capture(phase, input, expectedEvent);
+      assert.ok(!records.includes('app:1234'), 'numeric DSN password persisted');
+      assert.ok(records.includes('postgres://app:[REDACTED]'));
+    });
+  }
+
   // Ordinary code, URLs without credentials and SSH remotes stay readable.
   const benign = [
     'const tokenizer = new Tokenizer(config);',
