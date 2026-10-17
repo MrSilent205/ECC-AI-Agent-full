@@ -24,7 +24,7 @@ class LinkChecker(Protocol[ReportT]):
 
 def carrier_candidates(root: Path, module: Path, name: str, mapped: str) -> list[Path]:
     directories = [module, *module.parents]
-    directories = [root] if module == root else directories[:directories.index(root)]
+    directories = [root] if module == root else directories[:directories.index(root) + 1]
     candidates = [directory / name for directory in directories] + [root / mapped]
     return list(dict.fromkeys(candidates))
 

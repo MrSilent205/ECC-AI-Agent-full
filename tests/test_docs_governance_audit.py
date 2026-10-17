@@ -51,9 +51,12 @@ def test_module_audit_checks_local_carriers_links_and_is_read_only(project: Path
 @pytest.mark.parametrize("distribution", ("skills", ".agents/skills", "pi/core/skills"))
 @pytest.mark.parametrize("role,filename", (("agents", "AGENTS.md"), ("context", "CONTEXT.md")))
 @pytest.mark.parametrize("broken", (False, True))
-def test_root_module_checks_local_carrier_before_mapped_source(
-    project: Path, distribution: str, role: str, filename: str, broken: bool
+@pytest.mark.parametrize("module_path", (".", "src/inventory"))
+def test_module_audit_checks_root_carrier_before_mapped_source(
+    project: Path, distribution: str, role: str, filename: str, broken: bool,
+    module_path: str,
 ) -> None:
+    (project / module_path).mkdir(parents=True, exist_ok=True)
     (project / ".governance").mkdir()
     (project / "docs").mkdir()
     (project / ".governance/docs-map.json").write_text(
@@ -67,14 +70,15 @@ def test_root_module_checks_local_carrier_before_mapped_source(
     (project / filename).write_text("[target](docs/target.md)\n", encoding="utf-8")
     before = {path: path.read_bytes() for path in project.rglob("*") if path.is_file()}
     result = run_audit(
-        project, "modules", modules=(".",),
+        project, "modules", modules=(module_path,),
         script=ROOT / distribution / "docs-governance/scripts/audit-docs.py",
     )
     assert result.returncode == (1 if broken else 0), result.stdout + result.stderr
-    assert f"Local {role} source: '{filename}'" in result.stdout
+    source_label = f"Local {role} source" if module_path == "." else f"Shared {role} candidate"
+    assert f"{source_label}: '{filename}'" in result.stdout
     assert (f"Broken Markdown link: '{filename}' -> 'docs/target.md'" in result.stdout) == broken
     after = {path: path.read_bytes() for path in project.rglob("*") if path.is_file()}
-    assert after == before, "root module audit must remain read-only in every distribution"
+    assert after == before, "module audit must remain read-only in every distribution"
 
 
 @pytest.mark.parametrize("scope", ("modules", "full"))
@@ -100,8 +104,6 @@ def test_module_audit_reuses_mapped_sources_without_creating_shells(project: Pat
     )
     for name in ("rules", "glossary"):
         (project / f"docs/{name}.md").write_text(f"# {name}\n", encoding="utf-8")
-    for name in ("AGENTS", "CONTEXT"):
-        (project / f"{name}.md").write_text("[not canonical](missing.md)\n", encoding="utf-8")
     result = run_audit(project, "modules", modules=("inventory",))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Shared agents candidate: 'docs/rules.md'" in result.stdout
