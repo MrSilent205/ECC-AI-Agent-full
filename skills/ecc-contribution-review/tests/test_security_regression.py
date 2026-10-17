@@ -12,9 +12,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from record_security_evidence import source_hashes, validate_report
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+
 SPEC = importlib.util.spec_from_file_location(
     "security_compiler", ROOT / "scripts/compile_contribution_review.py"
 )
@@ -74,6 +76,8 @@ class SecurityRegressionTests(unittest.TestCase):
                 "scripts/contribution_review_validation.py",
                 "tests/test_compile_contribution_review.py",
                 "tests/test_security_regression.py",
+                "tests/test_security_evidence.py",
+                "tests/record_security_evidence.py",
                 "tests/test_review_regressions.py",
                 "agents/openai.yaml",
             )
@@ -84,6 +88,7 @@ class SecurityRegressionTests(unittest.TestCase):
                 digest, hashlib.sha256((repo / path).read_bytes()).hexdigest()
             )
         report = json.loads((ROOT / "tests/security-evidence/bandit.json").read_text())
+        validate_report(report, source_hashes(repo))
         self.assertEqual([], report["errors"])
         self.assertEqual([], report["results"])
         self.assertEqual(0, report["metrics"]["_totals"]["nosec"])
