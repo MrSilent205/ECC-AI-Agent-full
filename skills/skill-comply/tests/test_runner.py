@@ -482,6 +482,31 @@ class TestArchiveMembers:
         assert _sandboxed_setup_command(["tar", "-xf", "a.tar.zst"], sandbox) is None
         assert _sandboxed_setup_command(["tar", "-cf", "out.tar", "a.tar.zst"], sandbox) is not None
 
+    def test_selected_members_are_not_checked_as_archives(self, tmp_path: Path) -> None:
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "README.md").write_text("stale")
+        src = tmp_path / "fresh"
+        src.mkdir()
+        (src / "README.md").write_text("restored")
+        with tarfile.open(sandbox / "fixtures.tar", "w") as archive:
+            archive.add(src / "README.md", arcname="README.md")
+        for command in ("tar -xf fixtures.tar README.md", "tar xf fixtures.tar README.md", "tar --file=fixtures.tar -x README.md"):
+            argv = _sandboxed_setup_command(command.split(), sandbox)
+            assert argv is not None, command
+            (sandbox / "README.md").write_text("stale")
+            subprocess.run(argv, cwd=sandbox, check=True)
+            assert (sandbox / "README.md").read_text() == "restored", command
+        # members under .git or outside the sandbox stay refused
+        assert _sandboxed_setup_command(["tar", "-xf", "fixtures.tar", ".git/hooks/pre-commit"], sandbox) is None
+        assert _sandboxed_setup_command(["tar", "-xf", "fixtures.tar", "../x"], sandbox) is None
+        # the archive operand is still checked even when members are selected
+        (sandbox / "bad.tar").write_bytes(b"not an archive")
+        assert _sandboxed_setup_command(["tar", "-xf", "bad.tar", "README.md"], sandbox) is None
+        with zipfile.ZipFile(sandbox / "f.zip", "w") as archive:
+            archive.writestr("README.md", "restored")
+        assert _sandboxed_setup_command(["unzip", "-o", "f.zip", "README.md"], sandbox) is not None
+
 
 class TestSandboxBaseOwnership:
     def test_default_base_is_per_user(self) -> None:

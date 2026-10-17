@@ -270,12 +270,45 @@ def _extracted_archives_safe(tool: str, args: list[str], sandbox_dir: Path) -> b
     elif any(char in arg for arg in args for char in "*?["):
         return False  # unzip expands wildcards in the archive name itself
     root = sandbox_dir.resolve()
-    for arg in args:
-        for value in _attached_values(arg) if arg.startswith("-") else [arg]:
-            path = (root / value).resolve()
-            if path.is_file() and not _archive_safe(path):
-                return False
+    for value in _archive_operands(tool, args):
+        path = (root / value).resolve()
+        if path.is_file() and not _archive_safe(path):
+            return False
     return True
+
+
+def _archive_operands(tool: str, args: list[str]) -> list[str]:
+    """The archive file names only; members named after them are entry names, not files."""
+    found: list[str] = []
+    if tool == "unzip":
+        skip = False
+        for arg in args:
+            if skip:
+                skip = False
+            elif arg == "-d":
+                skip = True
+            elif not arg.startswith("-"):
+                return [arg]  # the first operand is the archive, the rest are members
+        return found
+    take_next = 0
+    for index, arg in enumerate(args):
+        if take_next:
+            found.append(arg)
+            take_next -= 1
+        elif arg.startswith("--"):
+            name, _, value = arg.partition("=")
+            if name == "--file":
+                found.append(value) if value else None
+                take_next = 0 if value else 1
+        elif arg.startswith("-") or index == 0:
+            cluster = arg.removeprefix("-")
+            if "f" in cluster:
+                rest = cluster.split("f", 1)[1]
+                if rest:
+                    found.append(rest)
+                else:
+                    take_next += 1
+    return found
 
 
 def _packages_allowed(args: list[str], options: frozenset[str]) -> bool:
