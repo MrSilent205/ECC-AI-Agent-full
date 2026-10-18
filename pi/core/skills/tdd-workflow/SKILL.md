@@ -89,11 +89,13 @@ ALWAYS write tests first, then implement code to make tests pass.
 
 Do not assume `npm test`. The commands in the steps and examples below use `<test>`, `<test-watch>`, and `<coverage>` as placeholders for the project's actual runner. Resolve them once before starting:
 
-1. **Resolve the package manager.** When using the full ECC repository, run its detector from the repository root:
+1. **Resolve the package manager.** When the ECC checkout is separate from the project under test, keep the working directory at the project root and run the ECC detector by its absolute path:
 
    ```bash
-   node scripts/setup-package-manager.js --detect
+   node /absolute/path/to/ECC/scripts/setup-package-manager.js --detect
    ```
+
+   The detector resolves project settings from the current working directory, so running it from the ECC checkout can select ECC's package manager instead of the project's.
 
    The standalone `pi/core` profile does not include that repository script. In that profile, resolve it from the project settings in this order: `CLAUDE_PACKAGE_MANAGER`, `.claude/package-manager.json`, the `package.json` `packageManager` field, a lockfile, then `~/.claude/package-manager.json`; default to npm if none is set. Supported managers are npm, pnpm, yarn, and bun.
 
