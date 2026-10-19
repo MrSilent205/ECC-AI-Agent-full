@@ -470,6 +470,18 @@ class TestArchiveMembers:
         for command in ("tar -xf a.tar", "unzip a.zip"):
             assert (_sandboxed_setup_command(command.split(), sandbox) is not None) is ok, command
 
+    def test_archive_after_other_option_arguments_is_checked(self, tmp_path: Path) -> None:
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        with tarfile.open(sandbox / "bad.tar", "w") as archive:
+            archive.addfile(tarfile.TarInfo(".git/hooks/pre-commit"))
+        with tarfile.open(sandbox / "good.tar", "w") as archive:
+            archive.addfile(tarfile.TarInfo("src/a.py"))
+        # old-style clusters take their option arguments in letter order: C gets ".", f the archive
+        for name, ok in (("bad.tar", False), ("good.tar", True)):
+            for command in (f"tar xCf . {name}", f"tar -xC . -f {name}"):
+                assert (_sandboxed_setup_command(command.split(), sandbox) is not None) is ok, command
+
     def test_links_and_unknown_formats_are_refused(self, tmp_path: Path) -> None:
         sandbox = tmp_path / "sandbox"
         sandbox.mkdir()

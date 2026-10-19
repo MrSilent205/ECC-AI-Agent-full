@@ -48,6 +48,7 @@ SAFE_GIT_OPTIONS = {
 }
 SAFE_GIT_CONFIG_KEYS = frozenset({"user.name", "user.email", "init.defaultbranch", "commit.gpgsign"})
 SAFE_TAR_SHORT_FLAGS = frozenset("cxtvfzjJC")
+TAR_VALUE_LETTERS = frozenset("bCfFgHIKLNTVX")  # GNU tar short options that take a value
 SAFE_TAR_LONG_OPTIONS = frozenset({
     "--create", "--extract", "--list", "--file", "--directory", "--verbose",
     "--gzip", "--gunzip", "--bzip2", "--xz", "--no-same-owner", "--no-same-permissions",
@@ -290,24 +291,30 @@ def _archive_operands(tool: str, args: list[str]) -> list[str]:
             elif not arg.startswith("-"):
                 return [arg]  # the first operand is the archive, the rest are members
         return found
-    take_next = 0
+    # Each pending entry is True when the next argument is the archive, False for another option's value.
+    pending: list[bool] = []
     for index, arg in enumerate(args):
-        if take_next:
-            found.append(arg)
-            take_next -= 1
+        if pending:
+            if pending.pop(0):
+                found.append(arg)
         elif arg.startswith("--"):
             name, _, value = arg.partition("=")
             if name == "--file":
-                found.append(value) if value else None
-                take_next = 0 if value else 1
-        elif arg.startswith("-") or index == 0:
-            cluster = arg.removeprefix("-")
-            if "f" in cluster:
-                rest = cluster.split("f", 1)[1]
-                if rest:
-                    found.append(rest)
-                else:
-                    take_next += 1
+                found.append(value) if value else pending.append(True)
+        elif not arg.startswith("-") and index == 0:
+            # Old style (`tar xCf DIR ARCHIVE`): every letter that takes a value takes the next argument, in order.
+            pending = [letter == "f" for letter in arg if letter in TAR_VALUE_LETTERS]
+        elif arg.startswith("-"):
+            # Short cluster: the first letter that takes a value takes the rest of the cluster or the next argument.
+            cluster = arg[1:]
+            for at, letter in enumerate(cluster):
+                if letter in TAR_VALUE_LETTERS:
+                    rest = cluster[at + 1:]
+                    if letter == "f" and rest:
+                        found.append(rest)
+                    elif not rest:
+                        pending.append(letter == "f")
+                    break
     return found
 
 
