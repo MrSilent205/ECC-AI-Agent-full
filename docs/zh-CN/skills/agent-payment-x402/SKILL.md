@@ -264,9 +264,9 @@ const res = await payOnce("https://api.example.com/data", { method: "GET" });
 | [`x402.org` 结算器](https://x402.org/facilitator) | 开发与测试网——它是包的默认值，无需配置，上游明确说明它不适用于主网路由 |
 | 托管的生产结算器 | 你希望获得主网覆盖而不必自己运维基础设施 |
 
-选择托管方案时，请从上游文档的[结算器列表](https://docs.x402.org/dev-tools/facilitators)中挑选，而不是照搬这里的名字——该列表有人维护、并不详尽，且覆盖范围会变化。撰写时它包含 Coinbase 的 CDP（对每笔交易执行 KYT/OFAC 筛查）、PayAI、Roundhouse（`https://x402.roundhouseai.io`，Base 主网 `exact` / USDC——以 `/supported` 为准）、Corbits、Dexter、Solvador 等，其中若干同时覆盖 EVM 与 Solana 主网。无论选择哪一个，上线前都要在其 `/supported` 端点确认实时覆盖范围，并在新增网络时重新确认。
+选择托管方案时，请从上游文档的[结算器列表](https://docs.x402.org/dev-tools/facilitators)中挑选，而不是照搬这里的名字——该列表有人维护、并不详尽，且覆盖范围会变化。撰写时它包含 Coinbase 的 CDP（对每笔交易执行 KYT/OFAC 筛查）、PayAI、Corbits、Dexter、Solvador 等，其中若干同时覆盖 EVM 与 Solana 主网。不在该列表中的其他结算器还包括 Roundhouse（`https://x402.roundhouseai.io`，Base 主网 `exact` / USDC——以 `/supported` 为准）。无论选择哪一个，上线前都要在其 `/supported` 端点确认实时覆盖范围，并在新增网络时重新确认。
 
-> **披露**：本节部分内容由与 PayAI 和 Roundhouse（所列结算器 / 索引之二）有关联的人贡献。每一项都只是若干选项之一，上面的自托管与上游默认路径是有意排在前面的。
+> **披露**：本节部分内容由与 PayAI（位于上游列表中）和 Roundhouse（已在上文单独提及）有关联的人贡献，二者均为此处提到的结算器 / 索引。每一项都只是若干选项之一，上面的自托管与上游默认路径是有意排在前面的。
 
 **卖方侧（API 向代理收费）。** 使用上游中间件；一条路由可以同时提供 Base 和 Solana（可运行版本参见 [`examples/typescript/servers`](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers)）：
 
