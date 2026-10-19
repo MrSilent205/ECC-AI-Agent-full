@@ -3,8 +3,9 @@ from typing import Any
 
 import pytest
 
-from llm.core.types import LLMInput, Message, Role
+from llm.core.types import LLMInput, Message, Role, ToolCall, ToolDefinition
 from llm.providers.claude import ClaudeProvider
+from llm.tools import ReActAgent, ToolExecutor, ToolRegistry
 
 
 class FakeMessages:
@@ -184,3 +185,68 @@ def test_generate_without_system_does_not_set_system_or_cache_control() -> None:
     params = provider.client.messages.last_params
     assert "cache_control" not in params
     assert "system" not in params
+
+
+@pytest.mark.unit
+async def test_agent_round_trip_uses_anthropic_tool_blocks() -> None:
+    provider = make_provider(make_response([
+        SimpleNamespace(type="tool_use", id="toolu_1", name="lookup", input={"key": "a"}),
+        SimpleNamespace(type="tool_use", id="toolu_2", name="lookup", input={"key": "b"}),
+    ]))
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(name="lookup", description="Lookup", parameters={"type": "object"}),
+        lambda key: f"value:{key}",
+    )
+    messages_api = provider.client.messages
+    original_create = messages_api.create
+    calls = []
+
+    def create(**params):
+        calls.append(params)
+        if len(calls) == 2:
+            messages_api.response = make_response([SimpleNamespace(type="text", text="Done")])
+        return original_create(**params)
+
+    messages_api.create = create
+    output = await ReActAgent(provider, ToolExecutor(registry)).run(
+        LLMInput(messages=[Message(role=Role.USER, content="Look up a and b")], tools=registry.list_tools())
+    )
+
+    assert output.content == "Done"
+    assert calls[1]["messages"] == [
+        {"role": "user", "content": "Look up a and b"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {"key": "a"}},
+            {"type": "tool_use", "id": "toolu_2", "name": "lookup", "input": {"key": "b"}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "value:a"},
+            {"type": "tool_result", "tool_use_id": "toolu_2", "content": "value:b"},
+        ]},
+    ]
+
+
+@pytest.mark.unit
+def test_generate_preserves_text_alongside_tool_calls() -> None:
+    provider = make_provider(make_response([SimpleNamespace(type="text", text="Done")]))
+    provider.generate(LLMInput(messages=[Message(
+        role=Role.ASSISTANT,
+        content="Checking",
+        name="assistant-name",
+        tool_calls=[ToolCall(id="toolu_1", name="lookup", arguments={})],
+    )]))
+    assert provider.client.messages.last_params["messages"] == [{
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "Checking"},
+            {"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}},
+        ],
+    }]
+
+
+@pytest.mark.unit
+def test_generate_rejects_tool_results_without_call_id() -> None:
+    provider = make_provider(make_response([]))
+    with pytest.raises(ValueError, match="tool_call_id"):
+        provider.generate(LLMInput(messages=[Message(role=Role.TOOL, content="result")]))

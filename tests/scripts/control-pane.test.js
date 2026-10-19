@@ -439,6 +439,70 @@ async function runTests() {
     passed++;
   else failed++;
 
+  for (const selection of [{ dbPath: path.join(os.tmpdir(), 'ecc-custom.db') }, { configPath: path.join(os.tmpdir(), 'ecc-custom.toml') }]) {
+    if (await test('custom database/configuration selection disables actions before spawning', async () => {
+      const app = createControlPaneServer({ host: '127.0.0.1', port: 0, repoRoot: REPO_ROOT, ...selection });
+      await app.listen();
+      try {
+        const health = await fetchLocal(`${app.url}/api/health`).then(response => response.json());
+        assert.strictEqual(health.allowActions, false);
+        assert.match(health.actionsDisabledReason, /custom database or configuration/);
+        const snapshot = await fetchLocal(`${app.url}/api/snapshot`).then(response => response.json());
+        assert.strictEqual(snapshot.execution.allowActions, false);
+        const response = await fetchLocal(`${app.url}/api/actions/graph-sync`, { method: 'POST', body: '{}' });
+        assert.strictEqual(response.status, 403);
+        assert.match((await response.json()).error, /custom database or configuration/);
+      } finally {
+        await app.close();
+      }
+    })) passed++; else failed++;
+  }
+
+  if (await test('native ECC2 configuration in APPDATA or XDG_CONFIG_HOME disables actions', async () => {
+    const variable = process.platform === 'win32' ? 'APPDATA' : process.platform === 'linux' ? 'XDG_CONFIG_HOME' : null;
+    if (!variable) return;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-control-pane-native-config-'));
+    const original = process.env[variable];
+    try {
+      process.env[variable] = tempDir;
+      fs.mkdirSync(path.join(tempDir, 'ecc2'));
+      fs.writeFileSync(path.join(tempDir, 'ecc2', 'config.toml'), 'db_path = "native-only.db"\n');
+      const app = createControlPaneServer({ repoRoot: tempDir, env: { HOME: tempDir } });
+      assert.strictEqual(app.allowActions, false);
+      assert.match(app.actionsDisabledReason, /discovered configuration/);
+    } finally {
+      if (original === undefined) delete process.env[variable];
+      else process.env[variable] = original;
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  })) passed++; else failed++;
+
+  if (await test('automatic configuration differences between the pane and action cwd disable actions', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-control-pane-config-target-'));
+    try {
+      const actionCwd = path.join(tempDir, 'ecc2');
+      fs.mkdirSync(actionCwd);
+      const defaults = createControlPaneServer({ repoRoot: tempDir, env: { HOME: tempDir } });
+      assert.strictEqual(defaults.allowActions, true, 'configuration-free defaults keep actions enabled');
+      const viewedDb = path.join(tempDir, 'viewed.db');
+      fs.writeFileSync(path.join(tempDir, 'ecc2.toml'), `db_path = ${JSON.stringify(viewedDb)}\n`);
+      const shared = createControlPaneServer({ repoRoot: tempDir, env: { HOME: tempDir } });
+      assert.strictEqual(shared.allowActions, false, 'automatically discovered configuration is read-only');
+      fs.writeFileSync(path.join(actionCwd, 'ecc2.toml'), 'db_path = "actual.db"\n');
+      const app = createControlPaneServer({ host: '127.0.0.1', port: 0, repoRoot: tempDir, env: { HOME: tempDir } });
+      assert.strictEqual(app.config.dbPath, viewedDb);
+      assert.strictEqual(app.allowActions, false);
+      await app.listen();
+      try {
+        const response = await fetchLocal(`${app.url}/api/actions/graph-sync`, { method: 'POST', body: '{}' });
+        assert.strictEqual(response.status, 403);
+      } finally { await app.close(); }
+      fs.unlinkSync(path.join(tempDir, 'ecc2.toml'));
+      const childOnly = createControlPaneServer({ repoRoot: tempDir, env: { HOME: tempDir } });
+      assert.strictEqual(childOnly.allowActions, false, 'configuration only in the action cwd must also disable writes');
+    } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
+  })) passed++; else failed++;
+
   if (
     await test('classifies Host and Origin headers against the loopback allowlist', async () => {
       const allowed = buildAllowedHostnames('127.0.0.1');

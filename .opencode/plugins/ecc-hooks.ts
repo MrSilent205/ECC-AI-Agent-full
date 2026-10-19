@@ -13,7 +13,7 @@
  * - SessionEnd → session.deleted
  */
 
-import type { PluginInput } from "@opencode-ai/plugin"
+import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 import * as fs from "fs"
 import * as path from "path"
 import { fileURLToPath, pathToFileURL } from "url"
@@ -51,20 +51,6 @@ interface ToolInput {
   tool: string
   callID?: string
   args?: ToolArgs
-}
-
-interface PermissionEvent {
-  tool: string
-  args: unknown
-}
-
-interface FileEvent {
-  path: string
-  type?: string
-}
-
-interface TodoEvent {
-  todos: Array<{ text: string; done: boolean }>
 }
 
 /**
@@ -148,9 +134,7 @@ function getECCVersion(eccRootDir?: string | null): string {
   return "2.0.0"
 }
 
-type ECCHooksPluginFn = (input: PluginInput) => Promise<Record<string, unknown>>
-
-export const ECCHooksPlugin: ECCHooksPluginFn = async ({
+export const ECCHooksPlugin: Plugin = async ({
   client,
   $,
   directory,
@@ -308,42 +292,133 @@ export const ECCHooksPlugin: ECCHooksPluginFn = async ({
   }
 
   return {
-    /**
-     * Prettier Auto-Format Hook
-     * Equivalent to Claude Code PostToolUse hook for prettier
-     *
-     * Triggers: After any JS/TS/JSX/TSX file is edited
-     * Action: Runs prettier --write on the file
-     */
-    "file.edited": async (event: { path: string }) => {
-      editedFiles.add(event.path)
-      changedFilesStore?.recordChange(event.path, "modified")
+    event: async ({ event }) => {
+      if (event.type === "file.edited") {
+        editedFiles.add(event.properties.file)
+        changedFilesStore?.recordChange(event.properties.file, "modified")
 
-      // Auto-format JS/TS files
-      if (hookEnabled("post:edit:format", ["strict"]) && event.path.match(/\.(ts|tsx|js|jsx)$/)) {
-        try {
-          await $`prettier --write ${event.path} 2>/dev/null`
-          log("info", `[ECC] Formatted: ${event.path}`)
-        } catch (error: unknown) {
-          // Prettier not installed or failed - log but continue
-          const errorMessage = error instanceof Error ? error.message : String(error)
-          log("debug", `[ECC] Prettier formatting failed for ${event.path}: ${errorMessage}`)
+        // Auto-format JS/TS files
+        if (hookEnabled("post:edit:format", ["strict"]) && event.properties.file.match(/\.(ts|tsx|js|jsx)$/)) {
+          try {
+            await $`prettier --write ${event.properties.file} 2>/dev/null`
+            log("info", `[ECC] Formatted: ${event.properties.file}`)
+          } catch (error: unknown) {
+            // Prettier not installed or failed - log but continue
+            const errorMessage = error instanceof Error ? error.message : String(error)
+            log("debug", `[ECC] Prettier formatting failed for ${event.properties.file}: ${errorMessage}`)
+          }
+        }
+
+        // Console.log warning check
+        if (hookEnabled("post:edit:console-warn", ["standard", "strict"]) && event.properties.file.match(/\.(ts|tsx|js|jsx)$/)) {
+          try {
+            const result = await $`grep -n "console\\.log" ${event.properties.file} 2>/dev/null`.text()
+            if (result.trim()) {
+              const lines = result.trim().split("\n").length
+              log(
+                "warn",
+                `[ECC] console.log found in ${event.properties.file} (${lines} occurrence${lines > 1 ? "s" : ""})`
+              )
+            }
+          } catch {
+            // No console.log found (grep returns non-zero) - this is good
+          }
         }
       }
 
-      // Console.log warning check
-      if (hookEnabled("post:edit:console-warn", ["standard", "strict"]) && event.path.match(/\.(ts|tsx|js|jsx)$/)) {
-        try {
-          const result = await $`grep -n "console\\.log" ${event.path} 2>/dev/null`.text()
-          if (result.trim()) {
-            const lines = result.trim().split("\n").length
-            log(
-              "warn",
-              `[ECC] console.log found in ${event.path} (${lines} occurrence${lines > 1 ? "s" : ""})`
-            )
+      if (event.type === "session.created") {
+        if (!hookEnabled("session:start", ["minimal", "standard", "strict"])) return
+
+        log("info", `[ECC] Session started - profile=${currentProfile}`)
+
+        // Check for project-specific context files
+        if (hasProjectFile("CLAUDE.md")) {
+          log("info", "[ECC] Found CLAUDE.md - loading project context")
+        }
+      }
+
+      if (event.type === "session.idle") {
+        if (!hookEnabled("stop:check-console-log", ["minimal", "standard", "strict"])) return
+        if (editedFiles.size === 0) return
+
+        log("info", "[ECC] Session idle - running console.log audit")
+
+        let totalConsoleLogCount = 0
+        const filesWithConsoleLogs: string[] = []
+
+        for (const file of editedFiles) {
+          if (!file.match(/\.(ts|tsx|js|jsx)$/)) continue
+
+          try {
+            const result = await $`grep -c "console\\.log" ${file} 2>/dev/null`.text()
+            const count = parseInt(result.trim(), 10)
+            if (count > 0) {
+              totalConsoleLogCount += count
+              filesWithConsoleLogs.push(file)
+            }
+          } catch {
+            // No console.log found
           }
-        } catch {
-          // No console.log found (grep returns non-zero) - this is good
+        }
+
+        if (totalConsoleLogCount > 0) {
+          log(
+            "warn",
+            `[ECC] Audit: ${totalConsoleLogCount} console.log statement(s) in ${filesWithConsoleLogs.length} file(s)`
+          )
+          filesWithConsoleLogs.forEach((f) =>
+            log("warn", `  - ${f}`)
+          )
+          log("warn", "[ECC] Remove console.log statements before committing")
+        } else {
+          log("info", "[ECC] Audit passed: No console.log statements found")
+        }
+
+        // Desktop notification (cross-platform)
+        try {
+          if (process.platform === "darwin") {
+            // macOS
+            await $`osascript -e 'display notification "Task completed!" with title "OpenCode ECC"' 2>/dev/null`
+          } else if (process.platform === "win32") {
+            // Windows - PowerShell notification
+            await $`powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Task completed!', 'OpenCode ECC', 'OK', 'Information')" 2>/dev/null`
+          } else if (process.platform === "linux") {
+            // Linux - notify-send (requires libnotify)
+            await $`notify-send "OpenCode ECC" "Task completed!" 2>/dev/null`
+          }
+        } catch (error: unknown) {
+          // Notification not supported or failed - log but continue
+          const errorMessage = error instanceof Error ? error.message : String(error)
+          log("debug", `[ECC] Desktop notification failed: ${errorMessage}`)
+        }
+
+        // Clear tracked files for next task
+        editedFiles.clear()
+      }
+
+      if (event.type === "session.deleted") {
+        if (!hookEnabled("session:end-marker", ["minimal", "standard", "strict"])) return
+        log("info", "[ECC] Session ended - cleaning up")
+        editedFiles.clear()
+        changedFilesStore?.clearChanges()
+        pendingToolChanges.clear()
+      }
+
+      if (event.type === "file.watcher.updated") {
+        let changeType: "added" | "modified" | "deleted" = "modified"
+        if (event.properties.event === "add") changeType = "added"
+        else if (event.properties.event === "unlink") changeType = "deleted"
+        changedFilesStore?.recordChange(event.properties.file, changeType)
+        if (event.properties.event === "change" && event.properties.file.match(/\.(ts|tsx|js|jsx)$/)) {
+          editedFiles.add(event.properties.file)
+        }
+      }
+
+      if (event.type === "todo.updated") {
+        const completed = event.properties.todos.filter((t) => t.status === "completed").length
+        const total = event.properties.todos.length
+        if (total > 0) {
+          log("info", `[ECC] Progress: ${completed}/${total} tasks completed`)
         }
       }
     },
@@ -398,7 +473,7 @@ export const ECCHooksPlugin: ECCHooksPluginFn = async ({
       if (
         hookEnabled("post:bash:pr-created", ["standard", "strict"]) &&
         input.tool === "bash" &&
-        input.args?.toString().includes("gh pr create")
+        String(input.args?.command || "").includes("gh pr create")
       ) {
         log("info", "[ECC] PR created - check GitHub Actions status")
       }
@@ -430,11 +505,10 @@ export const ECCHooksPlugin: ECCHooksPluginFn = async ({
      * Triggers: Before tool execution
      * Action: Warns about potential security issues
      */
-    "tool.execute.before": async (
-      input: ToolInput
-    ) => {
+    "tool.execute.before": async (input, output) => {
+      const args: ToolArgs = output.args
       if (input.tool === "write") {
-        const filePath = getFilePath(input.args)
+        const filePath = getFilePath(args)
         if (filePath) {
           const absPath = resolvePath(filePath)
           let type: "added" | "modified" = "modified"
@@ -454,7 +528,7 @@ export const ECCHooksPlugin: ECCHooksPluginFn = async ({
       if (
         hookEnabled("pre:bash:git-push-reminder", "strict") &&
         input.tool === "bash" &&
-        input.args?.toString().includes("git push")
+        String(args.command || "").includes("git push")
       ) {
         log(
           "info",
@@ -466,10 +540,10 @@ export const ECCHooksPlugin: ECCHooksPluginFn = async ({
       if (
         hookEnabled("pre:write:doc-file-warning", ["standard", "strict"]) &&
         input.tool === "write" &&
-        input.args?.filePath &&
-        typeof input.args.filePath === "string"
+        args?.filePath &&
+        typeof args.filePath === "string"
       ) {
-        const filePath = input.args.filePath
+        const filePath = args.filePath
         if (
           filePath.match(/\.(md|txt)$/i) &&
           !filePath.includes("README") &&
@@ -486,7 +560,7 @@ export const ECCHooksPlugin: ECCHooksPluginFn = async ({
 
       // Long-running command reminder
       if (hookEnabled("pre:bash:tmux-reminder", "strict") && input.tool === "bash") {
-        const cmd = String(input.args?.command || input.args || "")
+        const cmd = String(args?.command || args || "")
         if (
           cmd.match(/^(npm|pnpm|yarn|bun)\s+(install|build|test|run)/) ||
           cmd.match(/^cargo\s+(build|test|run)/) ||
@@ -497,137 +571,6 @@ export const ECCHooksPlugin: ECCHooksPluginFn = async ({
             "[ECC] Long-running command detected - consider using background execution"
           )
         }
-      }
-    },
-
-    /**
-     * Session Created Hook
-     * Equivalent to Claude Code SessionStart hook
-     *
-     * Triggers: When a new session starts
-     * Action: Loads context and displays welcome message
-     */
-    "session.created": async () => {
-      if (!hookEnabled("session:start", ["minimal", "standard", "strict"])) return
-
-      log("info", `[ECC] Session started - profile=${currentProfile}`)
-
-      // Check for project-specific context files
-      if (hasProjectFile("CLAUDE.md")) {
-        log("info", "[ECC] Found CLAUDE.md - loading project context")
-      }
-    },
-
-    /**
-     * Session Idle Hook
-     * Equivalent to Claude Code Stop hook
-     *
-     * Triggers: When session becomes idle (task completed)
-     * Action: Runs console.log audit on all edited files
-     */
-    "session.idle": async () => {
-      if (!hookEnabled("stop:check-console-log", ["minimal", "standard", "strict"])) return
-      if (editedFiles.size === 0) return
-
-      log("info", "[ECC] Session idle - running console.log audit")
-
-      let totalConsoleLogCount = 0
-      const filesWithConsoleLogs: string[] = []
-
-      for (const file of editedFiles) {
-        if (!file.match(/\.(ts|tsx|js|jsx)$/)) continue
-
-        try {
-          const result = await $`grep -c "console\\.log" ${file} 2>/dev/null`.text()
-          const count = parseInt(result.trim(), 10)
-          if (count > 0) {
-            totalConsoleLogCount += count
-            filesWithConsoleLogs.push(file)
-          }
-        } catch {
-          // No console.log found
-        }
-      }
-
-      if (totalConsoleLogCount > 0) {
-        log(
-          "warn",
-          `[ECC] Audit: ${totalConsoleLogCount} console.log statement(s) in ${filesWithConsoleLogs.length} file(s)`
-        )
-        filesWithConsoleLogs.forEach((f) =>
-          log("warn", `  - ${f}`)
-        )
-        log("warn", "[ECC] Remove console.log statements before committing")
-      } else {
-        log("info", "[ECC] Audit passed: No console.log statements found")
-      }
-
-      // Desktop notification (cross-platform)
-      try {
-        if (process.platform === "darwin") {
-          // macOS
-          await $`osascript -e 'display notification "Task completed!" with title "OpenCode ECC"' 2>/dev/null`
-        } else if (process.platform === "win32") {
-          // Windows - PowerShell notification
-          await $`powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Task completed!', 'OpenCode ECC', 'OK', 'Information')" 2>/dev/null`
-        } else if (process.platform === "linux") {
-          // Linux - notify-send (requires libnotify)
-          await $`notify-send "OpenCode ECC" "Task completed!" 2>/dev/null`
-        }
-      } catch (error: unknown) {
-        // Notification not supported or failed - log but continue
-        const errorMessage = error instanceof Error ? error.message : String(error)
-        log("debug", `[ECC] Desktop notification failed: ${errorMessage}`)
-      }
-
-      // Clear tracked files for next task
-      editedFiles.clear()
-    },
-
-    /**
-     * Session Deleted Hook
-     * Equivalent to Claude Code SessionEnd hook
-     *
-     * Triggers: When session ends
-     * Action: Final cleanup and state saving
-     */
-    "session.deleted": async () => {
-      if (!hookEnabled("session:end-marker", ["minimal", "standard", "strict"])) return
-      log("info", "[ECC] Session ended - cleaning up")
-      editedFiles.clear()
-      changedFilesStore?.clearChanges()
-      pendingToolChanges.clear()
-    },
-
-    /**
-     * File Watcher Hook
-     * OpenCode-only feature
-     *
-     * Triggers: When file system changes are detected
-     * Action: Updates tracking
-     */
-    "file.watcher.updated": async (event: { path: string; type: string }) => {
-      let changeType: "added" | "modified" | "deleted" = "modified"
-      if (event.type === "create" || event.type === "add") changeType = "added"
-      else if (event.type === "delete" || event.type === "remove") changeType = "deleted"
-      changedFilesStore?.recordChange(event.path, changeType)
-      if (event.type === "change" && event.path.match(/\.(ts|tsx|js|jsx)$/)) {
-        editedFiles.add(event.path)
-      }
-    },
-
-    /**
-     * Todo Updated Hook
-     * OpenCode-only feature
-     *
-     * Triggers: When todo list is updated
-     * Action: Logs progress
-     */
-    "todo.updated": async (event: { todos: Array<{ text: string; done: boolean }> }) => {
-      const completed = event.todos.filter((t) => t.done).length
-      const total = event.todos.length
-      if (total > 0) {
-        log("info", `[ECC] Progress: ${completed}/${total} tasks completed`)
       }
     },
 
@@ -751,54 +694,9 @@ export const ECCHooksPlugin: ECCHooksPluginFn = async ({
       }
     },
 
-    /**
-     * Permission Auto-Approve Hook
-     * OpenCode-specific: Auto-approve safe operations
-     *
-     * Triggers: When permission is requested
-     * Action: Auto-approve reads, formatters, and test commands; log all for audit
-     */
-    "permission.ask": async (event: PermissionEvent) => {
-      log("info", `[ECC] Permission requested for: ${event.tool}`)
-
-      try {
-        // Handle both string args and object args with command property
-        let cmd: string
-        if (typeof event.args === "string") {
-          cmd = event.args
-        } else if (event.args && typeof event.args === "object") {
-          cmd = String((event.args as Record<string, unknown>).command || "")
-        } else {
-          cmd = String(event.args || "")
-        }
-
-        // Auto-approve: read/search tools
-        if (["read", "glob", "grep", "search", "list"].includes(event.tool)) {
-          log("debug", `[ECC] Auto-approved read-only tool: ${event.tool}`)
-          return { approved: true, reason: "Read-only operation" }
-        }
-
-        // Auto-approve: formatters
-        if (event.tool === "bash" && /^(npx )?(@biomejs\/biome|prettier|black|gofmt|rustfmt|swift-format)/.test(cmd)) {
-          log("debug", `[ECC] Auto-approved formatter: ${cmd}`)
-          return { approved: true, reason: "Formatter execution" }
-        }
-
-        // Auto-approve: test execution
-        if (event.tool === "bash" && /^(npm test|npx vitest|npx jest|pytest|go test|cargo test)/.test(cmd)) {
-          log("debug", `[ECC] Auto-approved test execution: ${cmd}`)
-          return { approved: true, reason: "Test execution" }
-        }
-
-        // Everything else: let user decide
-        log("debug", `[ECC] Permission requires user approval: ${event.tool}`)
-        return { approved: undefined }
-      } catch (error: unknown) {
-        // Error in permission handling - log and deny for safety
-        const errorMessage = error instanceof Error ? error.message : String(error)
-        log("error", `[ECC] Permission handling error for ${event.tool}: ${errorMessage}`)
-        return { approved: false, reason: `Error: ${errorMessage}` }
-      }
+    // Preserve the host's ask/deny/allow decision; command prefixes cannot prove safety.
+    "permission.ask": async (permission) => {
+      await log("info", `[ECC] Permission requested for: ${permission.type}`)
     },
 
     tool: {

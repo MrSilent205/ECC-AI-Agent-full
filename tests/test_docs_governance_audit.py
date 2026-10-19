@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,23 @@ def run_audit(
         check=False,
         timeout=timeout,
     )
+
+
+@pytest.mark.parametrize("broken", [False, True])
+def test_audit_handles_ascii_output_with_unicode_paths(project: Path, broken: bool) -> None:
+    target = "missing-\u09ac\u09be\u0982\u09b2\u09be.md"
+    (project / "guide.md").write_text(f"[guide]({target})\n" if broken else "# Guide\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(project), "--scope", "artifacts"],
+        env={**os.environ, "PYTHONIOENCODING": "ascii", "PYTHONUTF8": "0"},
+        capture_output=True,
+        text=True,
+        encoding="ascii",
+        check=False,
+    )
+    assert result.returncode == int(broken), result.stderr
+    assert "Traceback" not in result.stderr
+    assert "Deterministic audit" in result.stdout
 
 
 def configure_git(project: Path) -> None:

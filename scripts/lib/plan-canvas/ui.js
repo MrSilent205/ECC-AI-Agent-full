@@ -256,8 +256,23 @@ function canvasClientJs() {
   window.addEventListener('message', e => {
     if (e.source !== frame.contentWindow) return;
     const msg = e.data || {};
-    if (msg.type === 'pc:queue' && msg.item) addToQueue(msg.item);
-    else if (msg.type === 'pc:queue-and-send' && msg.item) { addToQueue(msg.item); send(); }
+    if (msg.type === 'pc:queue' || msg.type === 'pc:queue-and-send') {
+      const item = msg.item;
+      const anchor = item && item.anchor;
+      if (!item || item.kind !== 'annotation' || typeof item.text !== 'string' || !item.text.trim()
+        || !anchor || typeof anchor.selector !== 'string' || !anchor.selector.trim()) return;
+      // Artifact scripts can forge messages; only the review chrome may send human feedback.
+      addToQueue({
+        kind: 'annotation', text: item.text.slice(0, 4000),
+        anchor: {
+          selector: anchor.selector.slice(0, 500),
+          tag: typeof anchor.tag === 'string' ? anchor.tag.slice(0, 60) : '',
+          snippet: typeof anchor.snippet === 'string' ? anchor.snippet.slice(0, 400) : '',
+          ...(anchor.textRange && typeof anchor.textRange.text === 'string'
+            ? { textRange: { text: anchor.textRange.text.slice(0, 1000) } } : {})
+        }
+      });
+    }
     else if (msg.type === 'pc:scroll') lastScroll = { x: msg.x || 0, y: msg.y || 0 };
     else if (msg.type === 'pc:toggle-mode') setAnnotate(!annotate);
     else if (msg.type === 'pc:ready') {

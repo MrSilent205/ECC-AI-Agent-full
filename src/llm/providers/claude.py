@@ -6,6 +6,12 @@ import os
 from typing import Any
 
 from anthropic import Anthropic
+from anthropic.types import (
+    MessageParam,
+    TextBlockParam,
+    ToolResultBlockParam,
+    ToolUseBlockParam,
+)
 
 from llm.core.interface import (
     AuthenticationError,
@@ -13,7 +19,15 @@ from llm.core.interface import (
     LLMProvider,
     RateLimitError,
 )
-from llm.core.types import LLMInput, LLMOutput, ModelInfo, ProviderType, Role, ToolCall
+from llm.core.types import (
+    LLMInput,
+    LLMOutput,
+    Message,
+    ModelInfo,
+    ProviderType,
+    Role,
+    ToolCall,
+)
 
 _DEFAULT_MODEL = "claude-sonnet-4-6"
 _OPUS_ADAPTIVE_ONLY_PREFIXES = ("claude-opus-4-7", "claude-opus-4-8")
@@ -21,6 +35,44 @@ _OPUS_ADAPTIVE_ONLY_PREFIXES = ("claude-opus-4-7", "claude-opus-4-8")
 
 def _uses_adaptive_thinking_only(model: str) -> bool:
     return any(model.startswith(prefix) for prefix in _OPUS_ADAPTIVE_ONLY_PREFIXES)
+
+
+def _to_anthropic_messages(messages: list[Message]) -> list[MessageParam]:
+    converted: list[MessageParam] = []
+    tool_results: list[ToolResultBlockParam] = []
+    for message in messages:
+        if message.role == Role.SYSTEM:
+            continue
+        if message.role == Role.TOOL:
+            if not message.tool_call_id:
+                raise ValueError("Anthropic tool results require a tool_call_id")
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": message.tool_call_id,
+                "content": message.content,
+            })
+            continue
+        if tool_results:
+            converted.append({"role": "user", "content": tool_results})
+            tool_results = []
+        if message.role == Role.USER:
+            converted.append({"role": "user", "content": message.content})
+        elif message.role == Role.ASSISTANT:
+            if message.tool_calls:
+                blocks: list[TextBlockParam | ToolUseBlockParam] = []
+                if message.content:
+                    blocks.append({"type": "text", "text": message.content})
+                blocks.extend({
+                    "type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments,
+                } for call in message.tool_calls)
+                converted.append({"role": "assistant", "content": blocks})
+            else:
+                converted.append({"role": "assistant", "content": message.content})
+        else:
+            raise ValueError(f"Unsupported Anthropic message role: {message.role}")
+    if tool_results:
+        converted.append({"role": "user", "content": tool_results})
+    return converted
 
 
 class ClaudeProvider(LLMProvider):
@@ -65,9 +117,7 @@ class ClaudeProvider(LLMProvider):
         try:
             model = input.model or self.default_model
             system_parts = [msg.content for msg in input.messages if msg.role == Role.SYSTEM]
-            api_messages = [
-                msg.to_dict() for msg in input.messages if msg.role not in (Role.SYSTEM,)
-            ]
+            api_messages = _to_anthropic_messages(input.messages)
 
             params: dict[str, Any] = {
                 "model": model,

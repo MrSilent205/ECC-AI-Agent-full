@@ -32,7 +32,7 @@ async function main(argv = process.argv) {
   console.log(`ECC Control Pane: ${app.url}`);
   console.log(`ECC2 database: ${app.config.dbPath}`);
   console.log(`ECC state database: ${app.config.stateDbPath}`);
-  console.log(args.allowActions ? 'Actions: enabled for local allowlist' : 'Actions: read-only');
+  console.log(app.allowActions ? 'Actions: enabled for local allowlist' : `Actions: read-only (${app.actionsDisabledReason})`);
 
   if (args.openBrowser) {
     openBrowser(app.url);

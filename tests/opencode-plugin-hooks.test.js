@@ -203,9 +203,9 @@ async function main() {
           )
 
           // Every hook that touches the store must remain callable and must not throw.
-          await hooks["file.edited"]({ path: "src/example.ts" })
+          await hooks.event({ event: { type: "file.edited", properties: { file: "src/example.ts" } } })
           await hooks["tool.execute.after"]({ tool: "edit", args: { path: "src/other.ts" } }, {})
-          await hooks["session.deleted"]()
+          await hooks.event({ event: { type: "session.deleted", properties: { info: { id: "session-1" } } } })
         } finally {
           fs.renameSync(backupDir, libDir)
         }
@@ -231,7 +231,7 @@ async function main() {
         ).href
         const store = await import(storeUrl)
 
-        await hooks["file.edited"]({ path: "src/example.ts" })
+        await hooks.event({ event: { type: "file.edited", properties: { file: "src/example.ts" } } })
         assert.ok(
           store
             .getChangedPaths()
@@ -251,7 +251,7 @@ async function main() {
           "Expected tool.execute.after to record a change for the edit tool"
         )
 
-        await hooks["session.deleted"]()
+        await hooks.event({ event: { type: "session.deleted", properties: { info: { id: "session-1" } } } })
         assert.ok(!store.hasChanges(), "Expected session.deleted to clear tracked changes")
       }),
     ],
@@ -289,7 +289,7 @@ async function main() {
         const $ = createFailingShell()
         const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
 
-        await hooks["session.created"]()
+        await hooks.event({ event: { type: "session.created", properties: { info: { id: "session-1" } } } })
 
         assert.deepStrictEqual($.calls, [], `Unexpected shell probes: ${$.calls.join(", ")}`)
         assert.ok(
@@ -309,7 +309,7 @@ async function main() {
           const $ = createFailingShell()
           const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
 
-          await hooks["session.created"]()
+          await hooks.event({ event: { type: "session.created", properties: { info: { id: "session-1" } } } })
 
           assert.deepStrictEqual($.calls, [], `Unexpected shell probes: ${$.calls.join(", ")}`)
           assert.ok(
@@ -389,82 +389,74 @@ async function main() {
       }),
     ],
     [
-      "permission.ask handles read-only tools correctly",
-      async () => withTempProject(
-        [],
-        async (projectDir) => {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
-
-          // Test read-only tools
-          const readResult = await hooks["permission.ask"]({ tool: "read", args: {} })
-          assert.strictEqual(readResult.approved, true)
-          assert.strictEqual(readResult.reason, "Read-only operation")
-
-          const globResult = await hooks["permission.ask"]({ tool: "glob", args: {} })
-          assert.strictEqual(globResult.approved, true)
-          assert.strictEqual(globResult.reason, "Read-only operation")
-
-          const grepResult = await hooks["permission.ask"]({ tool: "grep", args: {} })
-          assert.strictEqual(grepResult.approved, true)
-          assert.strictEqual(grepResult.reason, "Read-only operation")
+      "permission.ask preserves host decisions using SDK permission arguments",
+      async () => withTempProject([], async (projectDir) => {
+        const client = createClient()
+        const hooks = await ECCHooksPlugin({ client, $: createFailingShell(), directory: projectDir })
+        for (const type of ["read", "bash"]) {
+          for (const status of ["ask", "deny", "allow"]) {
+            const output = { status }
+            const result = await hooks["permission.ask"]({ id: "permission-1", type,
+              sessionID: "session-1", messageID: "message-1", title: "Operation",
+              metadata: { command: "npm test && unsafe-command" }, time: { created: Date.now() } }, output)
+            assert.strictEqual(result, undefined)
+            assert.strictEqual(output.status, status)
+          }
         }
-      ),
+        assert.ok(client.logs.some(entry => entry.message.includes("Permission requested for: bash")))
+      }),
     ],
     [
-      "permission.ask handles formatters correctly",
-      async () => withTempProject(
-        [],
-        async (projectDir) => {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
-
-          // Test formatter tools - note: args should be the command string, not object
-          const prettierResult = await hooks["permission.ask"]({ 
-            tool: "bash", 
-            args: "npx prettier --write src/index.ts" 
-          })
-          console.log("prettierResult:", JSON.stringify(prettierResult))
-          assert.strictEqual(prettierResult.approved, true)
-          assert.strictEqual(prettierResult.reason, "Formatter execution")
-
-          const biomeResult = await hooks["permission.ask"]({ 
-            tool: "bash", 
-            args: "npx @biomejs/biome format --write src/index.ts" 
-          })
-          console.log("biomeResult:", JSON.stringify(biomeResult))
-          assert.strictEqual(biomeResult.approved, true)
-          assert.strictEqual(biomeResult.reason, "Formatter execution")
-        }
-      ),
+      "SDK before-tool arguments classify new writes and issue documentation warnings",
+      async () => withTempProject([], async (projectDir) => {
+        const client = createClient()
+        const hooks = await ECCHooksPlugin({ client, $: createFailingShell(), directory: projectDir })
+        const input = { tool: "write", sessionID: "session-1", callID: "write-1" }
+        const args = { filePath: "notes.md", content: "hello" }
+        await hooks["tool.execute.before"](input, { args })
+        fs.writeFileSync(path.join(projectDir, args.filePath), args.content)
+        await hooks["tool.execute.after"]({ ...input, args }, { title: "", output: "ok", metadata: {} })
+        const changes = JSON.parse(await hooks.tool["changed-files"].execute({ format: "json" }, {}))
+        assert.ok(changes.files.some(file => file.path === "notes.md" && file.changeType === "added"))
+        assert.ok(client.logs.some(entry => entry.message.includes("Creating notes.md")))
+        await hooks.event({ event: { type: "session.deleted", properties: { info: { id: "session-1" } } } })
+      }),
     ],
     [
-      "permission.ask handles test execution correctly",
-      async () => withTempProject(
-        [],
-        async (projectDir) => {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
-
-          // Test test execution tools
-          const npmTestResult = await hooks["permission.ask"]({ 
-            tool: "bash", 
-            args: { command: "npm test" } 
-          })
-          assert.strictEqual(npmTestResult.approved, true)
-          assert.strictEqual(npmTestResult.reason, "Test execution")
-
-          const vitestResult = await hooks["permission.ask"]({ 
-            tool: "bash", 
-            args: { command: "npx vitest run" } 
-          })
-          assert.strictEqual(vitestResult.approved, true)
-          assert.strictEqual(vitestResult.reason, "Test execution")
+      "SDK events track watcher deletion, todos, and idle cleanup",
+      async () => withTempProject([], async (projectDir) => {
+        const client = createClient()
+        const hooks = await ECCHooksPlugin({ client, $: createFailingShell(), directory: projectDir })
+        await hooks.event({ event: { type: "file.watcher.updated", properties: { file: "deleted.js", event: "unlink" } } })
+        const changes = JSON.parse(await hooks.tool["changed-files"].execute({ format: "json" }, {}))
+        assert.ok(changes.files.some(file => file.path === "deleted.js" && file.changeType === "deleted"))
+        await hooks.event({ event: { type: "todo.updated", properties: { sessionID: "session-1", todos: [{ id: "todo-1", content: "done", priority: "high", status: "completed" }] } } })
+        assert.ok(client.logs.some(entry => entry.message.includes("Progress: 1/1")))
+        await hooks.event({ event: { type: "file.edited", properties: { file: "plain.txt" } } })
+        await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-1" } } })
+        await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-1" } } })
+        assert.strictEqual(client.logs.filter(entry => entry.message.includes("Session idle - running")).length, 1)
+        await hooks.event({ event: { type: "session.deleted", properties: { info: { id: "session-1" } } } })
+      }),
+    ],
+    [
+      "dependency inventory never claims unsupported analyses passed",
+      async () => withTempProject([], async (projectDir) => {
+        fs.writeFileSync(path.join(projectDir, "package.json"), JSON.stringify({ dependencies: { lodash: "4.17.20" } }))
+        const hooks = await ECCHooksPlugin({ client: createClient(), $: createFailingShell(), directory: projectDir })
+        for (const type of ["all", "outdated", "security", "unused"]) {
+          const result = JSON.parse(await hooks.tool["dependency-analyzer"].execute({ type, fix: true, depth: 3 }, { directory: projectDir }))
+          assert.strictEqual(result.success, false)
+          assert.strictEqual(result.status, "unsupported")
+          assert.strictEqual(result.summary.total, 1)
+          assert.strictEqual(result.summary.vulnerable, null)
+          assert.strictEqual(result.summary.outdated, null)
+          assert.strictEqual(result.summary.unused, null)
+          assert.ok(!JSON.stringify(result).includes("No critical dependency issues"))
+          assert.ok(!JSON.stringify(result).includes('"outdated":false'))
+          assert.strictEqual(result.fixApplied, false)
         }
-      ),
+      }),
     ],
     [
       "skill telemetry records a run through the shared tracker (#2463)",

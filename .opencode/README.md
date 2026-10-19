@@ -152,7 +152,7 @@ a pointer to this command if the build step is missing.
 | Todo Progress | `todo.updated` | Log task completion progress |
 | Shell Environment | `shell.env` | Inject environment variables |
 | Session Compacting | `experimental.session.compacting` | Preserve context across compaction |
-| Permission Auto-Approve | `permission.ask` | Auto-approve safe operations |
+| Permission Audit | `permission.ask` | Log requests while preserving OpenCode's decision |
 
 ### Custom Tools
 
@@ -165,7 +165,7 @@ a pointer to this command if the build step is missing.
 | lint-check | Detect linter and return command |
 | git-summary | Generate git summary with branch, status, and diff |
 | changed-files | List files changed in session as a navigable tree |
-| dependency-analyzer | Analyze dependencies for outdated, vulnerable, and unused packages |
+| dependency-analyzer | List declared dependencies; security, outdated, and unused checks are reported as not performed |
 
 ## Hook Event Mapping
 
@@ -180,6 +180,9 @@ OpenCode's plugin system maps to Claude Code hooks:
 | SessionEnd | `session.deleted` |
 
 OpenCode has 20+ additional events not available in Claude Code.
+
+Lifecycle and file notifications are handled through the SDK's `event({ event })`
+callback. Permission requests retain OpenCode's existing decision; ECC only logs them.
 
 ### Hook Runtime Controls
 
