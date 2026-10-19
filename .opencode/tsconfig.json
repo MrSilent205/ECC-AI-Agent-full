@@ -21,7 +21,8 @@
   },
   "include": [
     "plugins/**/*.ts",
-    "tools/**/*.ts",
+    "ecc/**/*.ts",
+    "ecc/**/*.json",
     "index.ts"
   ],
   "exclude": [

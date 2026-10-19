@@ -8,23 +8,25 @@
  * The regex patterns below are used to DETECT potential issues in user code.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
+import { defineTool, s } from "./schema.ts"
 import * as path from "path"
 import * as fs from "fs"
 
-const securityAuditTool: ToolDefinition = tool({
+const securityAuditTool = defineTool({
+  name: "security_audit",
+  v1Name: "security-audit",
   description:
     "Run a comprehensive security audit including dependency vulnerabilities, secret scanning, and common security issues.",
   args: {
-    type: tool.schema
+    type: s
       .enum(["all", "dependencies", "secrets", "code"])
       .optional()
       .describe("Type of audit to run (default: all)"),
-    fix: tool.schema
+    fix: s
       .boolean()
       .optional()
       .describe("Attempt to auto-fix dependency vulnerabilities (default: false)"),
-    severity: tool.schema
+    severity: s
       .enum(["low", "moderate", "high", "critical"])
       .optional()
       .describe("Minimum severity level to report (default: moderate)"),

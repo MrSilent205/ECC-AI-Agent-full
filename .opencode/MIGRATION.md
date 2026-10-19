@@ -13,69 +13,77 @@ OpenCode is an alternative CLI for AI-assisted development that supports **all**
 | Configuration | `CLAUDE.md`, `plugin.json` | `opencode.json` | Different file formats |
 | Agents | Markdown frontmatter | JSON object | Full parity |
 | Commands | `commands/*.md` | `command` object or `.md` files | Full parity |
-| Skills | `skills/*/SKILL.md` | `instructions` array | Loaded as context |
-| **Hooks** | `hooks.json` (3 phases) | **Plugin system (20+ events)** | **Full parity + more!** |
-| Rules | `rules/*.md` | `instructions` array | Consolidated or separate |
+| Skills | `skills/*/SKILL.md` | `skills/` directory | Discovered by OpenCode's skill tool |
+| **Hooks** | `hooks.json` | Plugin hooks and events | ECC runs the same hook scripts through its plugin |
+| Rules | `rules/*.md` | `AGENTS.md` / plugin-injected instructions | OpenCode v2 ignores the config `instructions` key |
 | MCP | Full support | Full support | Full parity |
 
 ## Hook Migration
 
-**OpenCode fully supports hooks** via its plugin system, which is actually MORE sophisticated than Claude Code with 20+ event types.
+OpenCode v2 (2.0+) plugins are `export default { id, setup(ctx) }` modules
+written against `@opencode/plugin`. Do not use `@opencode-ai/plugin`: that
+package is the v1 SDK and only contains an outdated preview of the v2 API.
+OpenCode v2 refuses v1 function-style plugins ("Plugin must export a default
+definition with an id and an effect or setup function").
 
-### Hook Event Mapping
+ECC does not reimplement its hooks for OpenCode. Its plugin translates
+OpenCode events into Claude Code hook payloads and runs the shared scripts
+from `hooks/hooks.json`, so the same hook IDs, profiles and disable flags apply.
 
-| Claude Code Hook | OpenCode Plugin Event | Notes |
-|-----------------|----------------------|-------|
-| `PreToolUse` | `tool.execute.before` | Can modify tool input |
-| `PostToolUse` | `tool.execute.after` | Can modify tool output |
-| `Stop` | `session.idle` or `session.status` | Session lifecycle |
-| `SessionStart` | `session.created` | Session begins |
-| `SessionEnd` | `session.deleted` | Session ends |
-| N/A | `file.edited` | OpenCode-only: file changes |
-| N/A | `file.watcher.updated` | OpenCode-only: file system watch |
-| N/A | `message.updated` | OpenCode-only: message changes |
-| N/A | `lsp.client.diagnostics` | OpenCode-only: LSP integration |
-| N/A | `tui.toast.show` | OpenCode-only: notifications |
+### Hook Event Mapping (OpenCode v2)
 
-### Converting Hooks to Plugins
+| Claude Code Hook | OpenCode v2 | Notes |
+|-----------------|-------------|-------|
+| `PreToolUse` | `ctx.tool.hook("execute.before")` | Input is mutable; ECC surfaces blocks via a shell command rewrite or `ctx.permission.hook("evaluate")` deny |
+| `PostToolUse` | `ctx.tool.hook("execute.after")` | Result is mutable |
+| `UserPromptSubmit` | `ctx.session.hook("prompt")` | Cannot cancel the prompt |
+| `SessionStart` | first `prompt`/`context` hook per session | Context goes in via `ctx.session.hook("context")` |
+| `PreCompact` | `ctx.session.hook("compaction")` | |
+| `Stop` | `session.execution.succeeded` event | `session.idle` is deprecated and not published in v2 |
+| `SessionEnd` | `session.deleted` event | |
+| N/A | `filesystem.changed` event | Replaces v1 `file.edited` / `file.watcher.updated` |
+| N/A | `ctx.shell.hook("create.before")` | Replaces v1 `shell.env` |
+| N/A | `ctx.permission.hook("evaluate")` | Replaces v1 `permission.ask` |
+| N/A | none | v1 `todo.updated` has no v2 equivalent |
 
-**Claude Code hook (hooks.json):**
-```json
-{
-  "PostToolUse": [{
-    "matcher": "tool == \"Edit\" && tool_input.file_path matches \"\\\\.(ts|tsx|js|jsx)$\"",
-    "hooks": [{
-      "type": "command",
-      "command": "prettier --write \"$file_path\""
-    }]
-  }]
-}
-```
+Two v2 details matter when writing hooks:
 
-**OpenCode plugin (.opencode/plugins/prettier-hook.ts):**
+- A promise-API hook that throws fails the whole step instead of rejecting the
+  tool call, so wrap callbacks and report blocks through the mechanisms above.
+- Every file in a config `plugins/` directory loads as a separate plugin, and a
+  duplicate plugin `id` aborts every plugin. Keep one entry file per plugin.
+
+### Writing a v2 hook
+
 ```typescript
-export const PrettierPlugin = async ({ $ }) => {
-  return {
-    "file.edited": async (event) => {
-      if (event.path.match(/\.(ts|tsx|js|jsx)$/)) {
-        await $`prettier --write ${event.path}`
+// <config>/plugins/prettier.ts
+import { execFile } from "node:child_process"
+
+export default {
+  id: "my-prettier",
+  async setup(ctx) {
+    await ctx.tool.hook("execute.after", (event) => {
+      const file = (event.input as { path?: string })?.path
+      if (event.status === "completed" && file && /\.(ts|tsx|js|jsx)$/.test(file)) {
+        execFile("npx", ["prettier", "--write", file], { cwd: ctx.location.directory }, () => {})
       }
-    }
-  }
+    })
+  },
 }
 ```
 
-### ECC Plugin Hooks Included
+### Upgrading from earlier ECC releases
 
-The ECC OpenCode configuration includes translated hooks:
+Re-run the installer (`ecc install --target opencode ...`). It removes the
+old `plugins/index.ts`, `plugins/ecc-hooks.ts`, `plugins/lib/`, `tools/`,
+`index.ts` and `package.json` it installed (files you changed are kept),
+installs `plugins/ecc.ts` and `ecc/`, and merges ECC's agents and commands
+into your `opencode.json` while removing the old `"./plugins"` entry.
+`ecc repair` refuses to migrate the old layout and asks you to re-run the
+installer. Then run `opencode service restart`.
 
-| Hook | OpenCode Event | Purpose |
-|------|----------------|---------|
-| Prettier auto-format | `file.edited` | Format JS/TS files after edit |
-| TypeScript check | `tool.execute.after` | Run tsc after editing .ts files |
-| console.log warning | `file.edited` | Warn about console.log statements |
-| Session notification | `session.idle` | Notify when task completes |
-| Security check | `tool.execute.before` | Check for secrets before commit |
+Tool names changed to `ecc_run_tests`, `ecc_changed_files`, etc. under
+OpenCode v2.
 
 ## Migration Steps
 
@@ -95,13 +103,12 @@ The `.opencode/` directory in this repository contains the translated configurat
 ```
 .opencode/
 ├── opencode.json              # Main configuration
-├── plugins/                   # Hook plugins (translated from hooks.json)
-│   ├── ecc-hooks.ts           # All ECC hooks as plugins
-│   └── index.ts               # Plugin exports
-├── tools/                     # Custom tools
-│   ├── run-tests.ts           # Run test suite
-│   ├── check-coverage.ts      # Check coverage
-│   └── security-audit.ts      # npm audit wrapper
+├── plugins/
+│   └── ecc.ts                 # The plugin entry (v2 `{ id, setup }` + v1 `server`)
+├── ecc/
+│   ├── bridge/                # Runs hooks/hooks.json scripts on OpenCode events
+│   ├── runtime/               # ECC root lookup and hook runner
+│   └── tools/                 # Custom tools (ecc_run_tests, ...)
 ├── commands/                  # All 23 commands (markdown)
 │   ├── plan.md
 │   ├── tdd.md
@@ -110,7 +117,7 @@ The `.opencode/` directory in this repository contains the translated configurat
 │   └── agents/                # Agent prompt files (12)
 ├── instructions/
 │   └── INSTRUCTIONS.md        # Consolidated rules
-├── package.json               # For npm distribution
+├── package.json               # npm build surface (not installed into a config root)
 ├── tsconfig.json              # TypeScript config
 └── MIGRATION.md               # This file
 ```
@@ -194,31 +201,17 @@ Create a detailed implementation plan for: $ARGUMENTS
 
 **Claude Code:** Skills are loaded from `skills/*/SKILL.md` files.
 
-**OpenCode:** Skills are added to the `instructions` array:
-```json
-{
-  "instructions": [
-    "skills/tdd-workflow/SKILL.md",
-    "skills/security-review/SKILL.md",
-    "skills/coding-standards/SKILL.md"
-  ]
-}
-```
+**OpenCode:** Skills live in a `skills/` directory next to the config (or in
+`~/.claude/skills` / `~/.agents/skills`) and are discovered by OpenCode's
+skill tool; they are not preloaded into the prompt.
 
 ### Rules
 
 **Claude Code:** Rules are in separate `rules/*.md` files.
 
-**OpenCode:** Rules can be consolidated into `instructions` or kept separate:
-```json
-{
-  "instructions": [
-    "instructions/INSTRUCTIONS.md",
-    "rules/common/security.md",
-    "rules/common/coding-style.md"
-  ]
-}
-```
+**OpenCode:** OpenCode v2 reads `AGENTS.md` files and ignores the config
+`instructions` key. The ECC plugin injects its consolidated
+`instructions/INSTRUCTIONS.md` into the system prompt instead.
 
 ## Model Mapping
 
@@ -280,31 +273,27 @@ After migration, ALL 23 commands are available:
 
 ## Plugin Installation
 
-### Option 1: Use ECC Configuration Directly
-
-The `.opencode/` directory contains everything pre-configured.
-
-### Option 2: Install as npm Package
+### Option 1: Home install (recommended)
 
 ```bash
-npm install ecc-universal
+npx ecc-universal install --target opencode --profile full --enable-hooks
+opencode service restart
 ```
 
-Then in your `opencode.json`:
+### Option 2: Use ECC Configuration Directly
+
+Run OpenCode inside the repository; `.opencode/` is discovered automatically.
+
+### Option 3: npm package as a plugin
+
 ```json
 {
-  "plugin": ["ecc-universal"]
+  "plugins": ["ecc-universal"]
 }
 ```
 
-This only loads the published ECC OpenCode plugin module (hooks/events and exported plugin tools).
-It does **not** automatically inject ECC's full `agent`, `command`, or `instructions` config into your project.
-
-If you want the full ECC OpenCode workflow surface, use the repository's bundled `.opencode/opencode.json` as your base config or copy these pieces into your project:
-- `.opencode/commands/`
-- `.opencode/prompts/`
-- `.opencode/instructions/INSTRUCTIONS.md`
-- the `agent` and `command` sections from `.opencode/opencode.json`
+This loads only the plugin module (hook bridge and tools). It does not add
+ECC's `agent` or `command` entries; use the home install for those.
 
 ## Troubleshooting
 
@@ -316,9 +305,12 @@ If you want the full ECC OpenCode workflow surface, use the repository's bundled
 
 ### Plugin Not Loading
 
-1. Verify plugin file exists in `.opencode/plugins/`
-2. Check TypeScript syntax is valid
-3. Ensure `plugin` array in `opencode.json` includes the path
+1. Run `opencode service restart`; the background service caches plugins.
+2. Check `~/.local/share/opencode/log/opencode.log` for `PluginModule.LoadError`
+   or `Duplicate plugin ID`.
+3. Make sure `plugins/` contains only `ecc.ts` from ECC (no leftover
+   `ecc-hooks.ts` or `index.ts`); re-run the installer to clean up.
+4. Hooks need `node` on `PATH` or an absolute `ECC_HOOK_NODE`.
 
 ### Agent Not Found
 
@@ -331,7 +323,7 @@ If you want the full ECC OpenCode workflow surface, use the repository's bundled
 1. Verify the command is defined in `opencode.json` or as `.md` file in `.opencode/commands/`
 2. Check the referenced agent exists
 3. Ensure the template uses `$ARGUMENTS` for user input
-4. If you installed only `plugin: ["ecc-universal"]`, note that npm plugin install does not auto-add ECC commands or agents to your project config
+4. If you installed only `plugins: ["ecc-universal"]`, note that the npm plugin does not add ECC commands or agents to your config
 
 ## Best Practices
 

@@ -4,7 +4,7 @@
  * Returns branch/status/log/diff details for the active repository.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
+import { defineTool, s } from "./schema.ts"
 import { execFileSync } from "child_process"
 
 // Conservative subset of git's allowed ref-name characters. Rejects shell
@@ -24,19 +24,21 @@ function isSafeDepth(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 1000
 }
 
-const gitSummaryTool: ToolDefinition = tool({
+const gitSummaryTool = defineTool({
+  name: "git_summary",
+  v1Name: "git-summary",
   description:
     "Generate git summary with branch, status, recent commits, and optional diff stats.",
   args: {
-    depth: tool.schema
+    depth: s
       .number()
       .optional()
       .describe("Number of recent commits to include (default: 5)"),
-    includeDiff: tool.schema
+    includeDiff: s
       .boolean()
       .optional()
       .describe("Include diff stats against base branch (default: true)"),
-    baseBranch: tool.schema
+    baseBranch: s
       .string()
       .optional()
       .describe("Base branch for diff comparison (default: main)"),

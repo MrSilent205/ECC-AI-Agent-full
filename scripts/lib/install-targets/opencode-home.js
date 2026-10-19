@@ -9,15 +9,27 @@ const {
   isForeignPlatformPath,
 } = require('./helpers');
 const { resolveOpencodeConfigRoot } = require('../opencode-paths');
+const {
+  CONFIG_ROOT_CHILDREN,
+  HOOK_RUNTIME_PACKAGES,
+  resolvePackageClosure,
+} = require('../install/opencode-home-config');
 
-const COMPILED_PLUGIN_DIST_DIR = path.join('.opencode', 'dist');
+// The npm package and `repair` rebuild .opencode/dist (scripts/build-opencode.js),
+// which also regenerates the bridge's hook table, so a built tree is the
+// signal that the plugin payload is complete. OpenCode itself loads the
+// TypeScript sources in place.
+const PLUGIN_SOURCE_DIR = '.opencode';
+const COMPILED_PLUGIN_DIST_DIR = path.join(PLUGIN_SOURCE_DIR, 'dist');
 const REQUIRED_COMPILED_ARTEFACTS = Object.freeze([
   { relativePath: path.join(COMPILED_PLUGIN_DIST_DIR, 'index.js'), expectedType: 'file' },
   { relativePath: path.join(COMPILED_PLUGIN_DIST_DIR, 'plugins'), expectedType: 'directory' },
-  { relativePath: path.join(COMPILED_PLUGIN_DIST_DIR, 'tools'), expectedType: 'directory' },
+]);
+const PLUGIN_SOURCE_ARTEFACTS = Object.freeze([
+  path.join(PLUGIN_SOURCE_DIR, 'plugins', 'ecc.ts'),
+  path.join(PLUGIN_SOURCE_DIR, 'ecc', 'bridge', 'hook-table.generated.json'),
 ]);
 const BUILD_COMMAND_HINT = 'node scripts/build-opencode.js (or: npm run build:opencode)';
-
 // Errors that mean "this artefact does not exist at the expected path / type".
 // Anything else (EACCES, EIO, ...) is a genuine system fault we surface to the
 // caller rather than masking as a missing artefact.
@@ -79,7 +91,58 @@ function defaultValidateOpencodeHome(input = {}) {
     ];
   }
 
+  const missingSources = PLUGIN_SOURCE_ARTEFACTS.filter(relativePath => (
+    !isExpectedType(path.join(input.repoRoot, relativePath), 'file')
+  ));
+  if (missingSources.length > 0) {
+    return [
+      buildValidationIssue(
+        'warning',
+        'opencode-plugin-source-missing',
+        `OpenCode plugin source file(s) missing: ${missingSources.join(', ')}. `
+          + 'The installed plugin will not load until they are restored.',
+        { missingRelativePaths: missingSources }
+      ),
+    ];
+  }
+
   return [];
+}
+
+/**
+ * Operations for the `.opencode` payload: the config-root children, plus a
+ * merge of ECC's agents and commands into the user's opencode.json. Merging
+ * (instead of copying) keeps the user's own settings and other plugins'
+ * entries, e.g. OpenCode Ensemble's `plugins` and `permissions` rules, and
+ * lets uninstall remove exactly what ECC added.
+ */
+function planConfigRootOperations(moduleId, root) {
+  return [
+    ...CONFIG_ROOT_CHILDREN.map(child => createManagedOperation({
+      moduleId,
+      sourceRelativePath: `${PLUGIN_SOURCE_DIR}/${child}`,
+      destinationPath: path.join(root, child),
+      strategy: 'preserve-relative-path',
+    })),
+    createManagedOperation({
+      kind: 'merge-json',
+      moduleId,
+      sourceRelativePath: `${PLUGIN_SOURCE_DIR}/opencode.json`,
+      destinationPath: path.join(root, 'opencode.json'),
+      strategy: 'merge-json',
+      contentTransform: 'opencode-home-config',
+    }),
+  ];
+}
+
+function planHookRuntimePackageOperations(moduleId, root, sourceRoot) {
+  if (!sourceRoot) return [];
+  return resolvePackageClosure(sourceRoot, HOOK_RUNTIME_PACKAGES).map(name => createManagedOperation({
+    moduleId,
+    sourceRelativePath: `node_modules/${name}`,
+    destinationPath: path.join(root, 'scripts', 'node_modules', ...name.split('/')),
+    strategy: 'preserve-relative-path',
+  }));
 }
 
 module.exports = createInstallTargetAdapter({
@@ -94,22 +157,15 @@ module.exports = createInstallTargetAdapter({
     const modules = Array.isArray(input.modules)
       ? input.modules
       : (input.module ? [input.module] : []);
+    const root = adapter.resolveRoot(input);
     const operations = modules.flatMap(module => (Array.isArray(module.paths) ? module.paths : [])
       .filter(sourcePath => !isForeignPlatformPath(sourcePath, adapter.target))
       .flatMap(sourcePath => {
         const operation = adapter.createScaffoldOperation(module.id, sourcePath, input);
-        if (operation.sourceRelativePath !== '.opencode') {
+        if (operation.sourceRelativePath !== PLUGIN_SOURCE_DIR) {
           return [operation];
         }
-        // Keep the repository template's sibling skills path for direct use,
-        // but point home installs at the skills copied inside the config root.
-        return [operation, createManagedOperation({
-          moduleId: module.id,
-          sourceRelativePath: '.opencode/opencode.json',
-          destinationPath: path.join(operation.destinationPath, 'opencode.json'),
-          strategy: operation.strategy,
-          contentTransform: 'opencode-home-skills-path',
-        })];
+        return planConfigRootOperations(module.id, root);
       }));
     const scriptOperation = operations.find(operation => (
       String(operation.sourceRelativePath).replace(/\\/g, '/').startsWith('scripts/')
@@ -117,12 +173,16 @@ module.exports = createInstallTargetAdapter({
     if (!scriptOperation) return operations;
     // OpenCode's root is ESM, while ECC runtime scripts remain CommonJS.
     // Record this boundary so install, repair and uninstall share ownership.
-    return [...operations, createManagedOperation({
-      moduleId: scriptOperation.moduleId,
-      sourceRelativePath: 'manifests/install-assets/commonjs-scripts-package.json',
-      destinationPath: path.join(adapter.resolveRoot(input), 'scripts', 'package.json'),
-      strategy: 'preserve-relative-path',
-    })];
+    return [
+      ...operations,
+      createManagedOperation({
+        moduleId: scriptOperation.moduleId,
+        sourceRelativePath: 'manifests/install-assets/commonjs-scripts-package.json',
+        destinationPath: path.join(root, 'scripts', 'package.json'),
+        strategy: 'preserve-relative-path',
+      }),
+      ...planHookRuntimePackageOperations(scriptOperation.moduleId, root, input.repoRoot),
+    ];
   },
   validate: defaultValidateOpencodeHome,
 });

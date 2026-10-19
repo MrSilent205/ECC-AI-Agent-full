@@ -69,6 +69,26 @@ function disableOpenCodeHookPluginRegistration(content, sourceRelativePath) {
   }, null, 2)}\n`;
 }
 
+/**
+ * Remove ECC's legacy `"./plugins"` registration from an OpenCode config
+ * object. OpenCode (v1 and v2) discovers <config>/plugins on its own, so the
+ * entry only ever caused a second load; home installs now merge ECC's agents
+ * and commands without it and strip it from configs left by older releases.
+ */
+function stripLegacyOpenCodePluginRegistration(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config) || !Array.isArray(config.plugin)) {
+    return config;
+  }
+  const plugin = config.plugin.filter(entry => entry !== './plugins');
+  if (plugin.length === config.plugin.length) return config;
+  const { plugin: _removed, ...rest } = config;
+  return plugin.length > 0 ? { ...rest, plugin } : rest;
+}
+
+function isOpenCodeHomeConfigMerge(operation = {}) {
+  return operation.kind === 'merge-json' && operation.contentTransform === 'opencode-home-config';
+}
+
 function getOpenCodeActivationPathKind(value) {
   const relative = normalizeOperationPath(value);
   if (relative === 'opencode.json') return 'config';
@@ -78,6 +98,12 @@ function getOpenCodeActivationPathKind(value) {
 }
 
 function getOpenCodeSourceActivationKind(operation = {}) {
+  // Home installs merge only ECC's agents and commands into opencode.json
+  // (see the opencode-home-config transform); that projection registers no
+  // plugin, so it is not a hook activation surface.
+  if (isOpenCodeHomeConfigMerge(operation)) {
+    return null;
+  }
   const source = normalizeOperationPath(operation.sourceRelativePath);
   if (!source.startsWith('.opencode/')) return null;
   return getOpenCodeActivationPathKind(source.replace(/^\.opencode\/(?:dist\/)?/, ''));
@@ -87,10 +113,23 @@ function isOpenCodePluginEntrypoint(operation = {}) {
   return getOpenCodeSourceActivationKind(operation) === 'plugin';
 }
 
+// Stub written by releases before OpenCode v2 support. It still counts as
+// inactive so existing deactivated installs keep verifying cleanly.
+const LEGACY_DISABLED_OPENCODE_PLUGIN_CONTENT = 'export default async () => ({});\n';
+
+function isDisabledOpenCodePluginContent(content) {
+  return content === getDisabledOpenCodePluginContent() || content === LEGACY_DISABLED_OPENCODE_PLUGIN_CONTENT;
+}
+
 function getDisabledOpenCodePluginContent() {
   // OpenCode discovers plugins independently of opencode.json registration.
   // Do not import the original module: even module initialization has effects.
-  return 'export default async () => ({});\n';
+  // The stub must satisfy both loaders: OpenCode v2 requires a default
+  // `{ id, setup }` definition (anything else is a load error), and v1 reads
+  // `server`. The id is derived from the stub's own location so no two stubs
+  // (or a stub and the live plugin) can collide: v2 aborts every plugin on a
+  // duplicate id.
+  return 'export default { id: `ecc-disabled:${import.meta.url}`, setup() {}, server: async () => ({}) };\n';
 }
 
 function isOpenCodeHookActivationOperation(operation = {}) {
@@ -189,14 +228,9 @@ function disableUnselectedOpenCodeHooks(plan) {
     return plan;
   }
   const runtimeSelected = planSelectsHookRuntime(plan);
-  const transformOperations = operations => (Array.isArray(operations) ? operations : []).map(operation => {
-    // The source barrel is needed by the published package, but OpenCode scans
-    // plugins/index.ts and plugins/ecc-hooks.ts independently in home installs.
-    if (!runtimeSelected || normalizeOperationPath(operation.sourceRelativePath) === '.opencode/plugins/index.ts') {
-      return withoutOpenCodeHookActivation(operation);
-    }
-    return operation;
-  });
+  const transformOperations = operations => (Array.isArray(operations) ? operations : []).map(operation => (
+    runtimeSelected ? operation : withoutOpenCodeHookActivation(operation)
+  ));
 
   return {
     ...plan,
@@ -329,6 +363,10 @@ module.exports = {
   disableUnselectedOpenCodeHooks,
   disableOpenCodeHookPluginRegistration,
   getDisabledOpenCodePluginContent,
+  isOpenCodeHomeConfigMerge,
+  stripLegacyOpenCodePluginRegistration,
+  isDisabledOpenCodePluginContent,
+  LEGACY_DISABLED_OPENCODE_PLUGIN_CONTENT,
   getOpenCodeActivationPathKind,
   getOpenCodeSourceActivationKind,
   formatHookCapabilityDisclosure,

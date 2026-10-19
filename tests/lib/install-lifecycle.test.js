@@ -207,11 +207,23 @@ function writeOpencodeState(homeDir, overrides = {}) {
   };
 }
 
+// Old-layout OpenCode activation bytes (pre-v2 releases shipped a function
+// plugin, a barrel and a `./plugins` registration). Synthesized here because
+// the repository no longer contains these files.
+const LEGACY_OPENCODE_FILES = Object.freeze({
+  'opencode.json': `${JSON.stringify({ plugin: ['./plugins'], agent: {} }, null, 2)}\n`,
+  'plugins/ecc-hooks.ts': 'export const ECCHooksPlugin = async () => ({ "session.created": async () => {} })\nexport default ECCHooksPlugin\n',
+  'plugins/index.ts': 'export { ECCHooksPlugin, default } from "./ecc-hooks.ts"\n',
+});
+
 function writeRecordedOpenCodeActivation(homeDir, sourceRoot = REPO_ROOT) {
   const targetRoot = path.join(homeDir, '.config', 'opencode');
   const operations = ['opencode.json', 'plugins/ecc-hooks.ts', 'plugins/index.ts'].map(relativePath => {
     const sourceRelativePath = `.opencode/${relativePath}`;
-    const content = fs.readFileSync(path.join(sourceRoot, sourceRelativePath));
+    const sourcePath = path.join(sourceRoot, sourceRelativePath);
+    const content = fs.existsSync(sourcePath)
+      ? fs.readFileSync(sourcePath)
+      : Buffer.from(LEGACY_OPENCODE_FILES[relativePath]);
     const destinationPath = path.join(targetRoot, relativePath);
     fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
     fs.writeFileSync(destinationPath, content);
@@ -246,10 +258,10 @@ function withPrivateOpenCodeSource(homeDir, callback) {
   for (const [relative, value] of Object.entries(files)) {
     fs.writeFileSync(path.join(sourceRoot, relative), formatJson(value));
   }
-  for (const relative of ['opencode.json', 'plugins/ecc-hooks.ts', 'plugins/index.ts']) {
+  for (const [relative, content] of Object.entries(LEGACY_OPENCODE_FILES)) {
     const destination = path.join(sourceRoot, '.opencode', relative);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.copyFileSync(path.join(REPO_ROOT, '.opencode', relative), destination);
+    fs.writeFileSync(destination, content);
   }
   callback(sourceRoot);
 }
@@ -1990,15 +2002,11 @@ function runTests() {
       const targetRoot = path.join(projectRoot, '.cursor');
       const installStatePath = path.join(targetRoot, 'ecc-install-state.json');
       const destinationPath = path.join(targetRoot, 'opencode.json');
-      const sourceConfig = JSON.parse(fs.readFileSync(
-        path.join(REPO_ROOT, '.opencode', 'opencode.json'),
-        'utf8'
-      ));
-      const expectedContent = `${JSON.stringify({
-        ...sourceConfig,
-        plugin: sourceConfig.plugin.filter(plugin => plugin !== './plugins'),
-        skills: { ...sourceConfig.skills, paths: ['./skills'] },
-      }, null, 2)}\n`;
+      const { transformInstallContent } = require('../../scripts/lib/install/content-transform');
+      const expectedContent = transformInstallContent(
+        { contentTransform: 'opencode-disable-ecc-hooks', sourceRelativePath: '.opencode/opencode.json' },
+        fs.readFileSync(path.join(REPO_ROOT, '.opencode', 'opencode.json'), 'utf8')
+      );
       fs.mkdirSync(targetRoot, { recursive: true });
       fs.writeFileSync(destinationPath, expectedContent, 'utf8');
       writeState(installStatePath, createCursorStateOptions(projectRoot, {
@@ -2046,9 +2054,9 @@ function runTests() {
           exemptValidationCodes: ['opencode-plugin-not-built'],
         });
         applyInstallPlan(plan);
-        const pluginPaths = ['ecc-hooks.ts', 'index.ts'].map(name => path.join(plan.targetRoot, 'plugins', name));
+        const pluginPaths = ['ecc.ts'].map(name => path.join(plan.targetRoot, 'plugins', name));
         for (const pluginPath of pluginPaths) {
-          assert.strictEqual(fs.readFileSync(pluginPath, 'utf8'), 'export default async () => ({});\n');
+          assert.strictEqual(fs.readFileSync(pluginPath, 'utf8'), require('../../scripts/lib/install/hook-consent').getDisabledOpenCodePluginContent());
           fs.unlinkSync(pluginPath);
         }
         const before = buildDoctorReport({ repoRoot: REPO_ROOT, homeDir, projectRoot: homeDir, targets: ['opencode'] });
@@ -2067,7 +2075,7 @@ function runTests() {
         assert.strictEqual(buildCalls, 1, 'Only the injected inert builder is used');
         assert.strictEqual(repaired.results[0].status, 'repaired');
         for (const pluginPath of pluginPaths) {
-          assert.strictEqual(fs.readFileSync(pluginPath, 'utf8'), 'export default async () => ({});\n');
+          assert.strictEqual(fs.readFileSync(pluginPath, 'utf8'), require('../../scripts/lib/install/hook-consent').getDisabledOpenCodePluginContent());
         }
         const state = readInstallState(plan.installStatePath);
         assert.strictEqual(state.request.hookConsent, 'declined');
@@ -2085,34 +2093,42 @@ function runTests() {
     }
   })) passed++; else failed++;
 
-  if (test('OpenCode repair disables older auto-discovered activation without inferring consent', () => {
+  if (test('OpenCode repair refuses an older layout and the installer upgrades it without inferring consent', () => {
     const homeDir = createTempDir('install-lifecycle-opencode-old-activation-');
     try {
-      withTemporarilyMovedPath(path.join(REPO_ROOT, '.opencode', 'dist'), () => {
-        const recorded = writeRecordedOpenCodeActivation(homeDir);
-        const result = repairInstalledStates({
-          repoRoot: REPO_ROOT, homeDir, projectRoot: homeDir, targets: ['opencode'],
-          buildOpencodePayload(repoRoot) {
-            const distDir = path.join(repoRoot, '.opencode', 'dist');
-            fs.mkdirSync(path.join(distDir, 'plugins'), { recursive: true });
-            fs.mkdirSync(path.join(distDir, 'tools'), { recursive: true });
-            fs.writeFileSync(path.join(distDir, 'index.js'), 'module.exports = {};\n');
-          },
-        });
-        assert.strictEqual(result.results[0].status, 'repaired');
-        for (const name of ['ecc-hooks.ts', 'index.ts']) {
-          assert.strictEqual(fs.readFileSync(path.join(recorded.targetRoot, 'plugins', name), 'utf8'), 'export default async () => ({});\n');
-        }
-        assert.ok(!JSON.parse(fs.readFileSync(path.join(recorded.targetRoot, 'opencode.json'), 'utf8')).plugin.includes('./plugins'));
-        const state = readInstallState(recorded.installStatePath);
-        assert.notStrictEqual(state.request.hookConsent, 'enabled');
-        assert.ok(!state.resolution.selectedModules.includes('hooks-runtime'));
-        for (const operation of state.operations.filter(operation => (
-          ['.opencode/plugins/ecc-hooks.ts', '.opencode/plugins/index.ts'].includes(operation.sourceRelativePath)
-        ))) {
-          assert.strictEqual(operation.contentTransform, 'opencode-disable-plugin-entrypoint');
-        }
+      const recorded = writeRecordedOpenCodeActivation(homeDir);
+      const before = fs.readFileSync(recorded.installStatePath);
+      const result = repairInstalledStates({
+        repoRoot: REPO_ROOT, homeDir, projectRoot: homeDir, targets: ['opencode'],
+        buildOpencodePayload() { throw new Error('repair must refuse before building'); },
       });
+      assert.strictEqual(result.results[0].status, 'error');
+      assert.match(result.results[0].error, /older ECC OpenCode layout.*Re-run the ECC installer/);
+      assert.deepStrictEqual(fs.readFileSync(recorded.installStatePath), before, 'Refused repair keeps ownership unchanged');
+      for (const name of ['ecc-hooks.ts', 'index.ts']) {
+        assert.ok(fs.existsSync(path.join(recorded.targetRoot, 'plugins', name)));
+      }
+
+      const plan = createInstallPlanFromRequest({
+        mode: 'manifest', target: 'opencode', profileId: null,
+        moduleIds: ['platform-configs'], includeComponentIds: [], excludeComponentIds: [],
+        legacyLanguages: [], hookConsent: null,
+      }, { sourceRoot: REPO_ROOT, homeDir, projectRoot: homeDir, exemptValidationCodes: ['opencode-plugin-not-built'] });
+      applyInstallPlan(plan);
+      for (const name of ['ecc-hooks.ts', 'index.ts']) {
+        assert.ok(!fs.existsSync(path.join(recorded.targetRoot, 'plugins', name)), `${name} is removed by the upgrade`);
+      }
+      assert.strictEqual(
+        fs.readFileSync(path.join(recorded.targetRoot, 'plugins', 'ecc.ts'), 'utf8'),
+        require('../../scripts/lib/install/hook-consent').getDisabledOpenCodePluginContent(),
+        'Without consent the new entrypoint is installed inert'
+      );
+      const config = JSON.parse(fs.readFileSync(path.join(recorded.targetRoot, 'opencode.json'), 'utf8'));
+      assert.ok(!(config.plugin || []).includes('./plugins'));
+      const state = readInstallState(recorded.installStatePath);
+      assert.notStrictEqual(state.request.hookConsent, 'enabled');
+      assert.ok(!state.resolution.selectedModules.includes('hooks-runtime'));
+      assert.ok(!state.operations.some(operation => /plugins\/(ecc-hooks|index)\.ts$/.test(operation.destinationPath)));
     } finally {
       cleanup(homeDir);
     }

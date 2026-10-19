@@ -1,6 +1,8 @@
 /** Synthetic legacy migration: both install roots stay locked across build/apply. */
 'use strict';
 
+const { getDisabledOpenCodePluginContent } = require('../../scripts/lib/install/hook-consent');
+
 const assert = require('assert');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -325,8 +327,9 @@ function runTests() {
       assert.ok(!state.resolution.selectedModules.includes('hooks-runtime'));
       assert.notStrictEqual(state.request.hookConsent, 'enabled');
       assert.strictEqual(fs.readFileSync(path.join(value.canonicalRoot, 'plugins/ecc-hooks.ts'), 'utf8'),
-        'export default async () => ({});\n');
-      assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(value.canonicalRoot, 'opencode.json'))).plugin, []);
+        getDisabledOpenCodePluginContent());
+      const migratedConfig = JSON.parse(fs.readFileSync(path.join(value.canonicalRoot, 'opencode.json')));
+      assert.ok(!(migratedConfig.plugin || []).includes('./plugins'), 'Legacy plugin registration is removed');
       for (const relative of ['opencode.json', 'plugins/ecc-hooks.ts', 'ecc-install-state.json']) {
         assert.strictEqual(fs.existsSync(path.join(value.legacyRoot, relative)), false);
       }

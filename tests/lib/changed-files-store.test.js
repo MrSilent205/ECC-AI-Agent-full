@@ -3,7 +3,7 @@ const path = require('path')
 const { pathToFileURL } = require('url')
 
 const repoRoot = path.join(__dirname, '..', '..')
-const storePath = path.join(repoRoot, '.opencode', 'dist', 'plugins', 'lib', 'changed-files-store.js')
+const storePath = path.join(repoRoot, '.opencode', 'dist', 'ecc', 'lib', 'changed-files-store.js')
 
 function test(name, fn) {
   try {

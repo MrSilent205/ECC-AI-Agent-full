@@ -1,8 +1,9 @@
 /**
  * Tests for OpenCode custom tools
  * 
- * Tests the 7 custom tools: run-tests, check-coverage, security-audit, 
- * format-code, lint-check, git-summary, changed-files
+ * Tests the adapter-neutral tool definitions in .opencode/ecc/tools: run-tests,
+ * check-coverage, security-audit, format-code, lint-check, git-summary,
+ * changed-files (registered as ecc_* under OpenCode v2).
  */
 
 const assert = require("node:assert")
@@ -34,7 +35,7 @@ async function loadTools() {
   })
   assert.strictEqual(buildResult.status, 0, buildResult.stderr || buildResult.stdout)
   
-  const toolsDir = path.join(repoRoot, ".opencode", "dist", "tools")
+  const toolsDir = path.join(repoRoot, ".opencode", "dist", "ecc", "tools")
   const tools = {}
   
   // Load each tool
@@ -237,15 +238,15 @@ async function main() {
   // Test changed-files tool
   if (tools.changedfiles) {
     tests.push([
-      "changed-files: reports an actionable, scrubbed error when plugins/lib is missing",
+      "changed-files: reports an actionable, scrubbed error when ecc/lib is missing",
       async () => withTempProject([], async (projectDir) => {
         const repoRoot = path.join(__dirname, "..")
-        const libDir = path.join(repoRoot, ".opencode", "dist", "plugins", "lib")
+        const libDir = path.join(repoRoot, ".opencode", "dist", "ecc", "lib")
         const backupDir = path.join(
           repoRoot,
           ".opencode",
           "dist",
-          "plugins",
+          "ecc",
           "lib.missing-store-test-backup"
         )
         fs.renameSync(libDir, backupDir)
@@ -277,11 +278,11 @@ async function main() {
     ])
 
     tests.push([
-      "changed-files: renders tracked changes once plugins/lib is present",
+      "changed-files: renders tracked changes once ecc/lib is present",
       async () => withTempProject([], async (projectDir) => {
         const repoRoot = path.join(__dirname, "..")
         const storeUrl = pathToFileURL(
-          path.join(repoRoot, ".opencode", "dist", "plugins", "lib", "changed-files-store.js")
+          path.join(repoRoot, ".opencode", "dist", "ecc", "lib", "changed-files-store.js")
         ).href
         const store = await import(storeUrl)
         store.initStore(projectDir)

@@ -5,27 +5,29 @@
  * Automatically detects the package manager and test framework.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
+import { defineTool, s } from "./schema.ts"
 import * as path from "path"
 import * as fs from "fs"
 
-const runTestsTool: ToolDefinition = tool({
+const runTestsTool = defineTool({
+  name: "run_tests",
+  v1Name: "run-tests",
   description:
     "Run the test suite with optional coverage, watch mode, or specific test patterns. Automatically detects package manager (npm, pnpm, yarn, bun) and test framework.",
   args: {
-    pattern: tool.schema
+    pattern: s
       .string()
       .optional()
       .describe("Test file pattern or specific test name to run"),
-    coverage: tool.schema
+    coverage: s
       .boolean()
       .optional()
       .describe("Run with coverage reporting (default: false)"),
-    watch: tool.schema
+    watch: s
       .boolean()
       .optional()
       .describe("Run in watch mode for continuous testing (default: false)"),
-    updateSnapshots: tool.schema
+    updateSnapshots: s
       .boolean()
       .optional()
       .describe("Update Jest/Vitest snapshots (default: false)"),

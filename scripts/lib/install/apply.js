@@ -12,7 +12,9 @@ const { readInstallState, writeInstallState } = require('../install-state');
 const {
   assertHookConsentReady,
   disableOpenCodeHookPluginRegistration,
-  getDisabledOpenCodePluginContent,
+  isOpenCodeHomeConfigMerge,
+  stripLegacyOpenCodePluginRegistration,
+  isDisabledOpenCodePluginContent,
   getRecordedHookConsent,
   getOpenCodeActivationPathKind,
   getOpenCodeSourceActivationKind,
@@ -448,7 +450,7 @@ function openCodeActivationCandidates(plan, previousOperations) {
 
 function activationIsInactive(kind, operation, content) {
   if (kind === 'plugin') {
-    return content.toString('utf8') === getDisabledOpenCodePluginContent();
+    return isDisabledOpenCodePluginContent(content.toString('utf8'));
   }
   const text = content.toString('utf8');
   // Validate first so malformed JSON retains its source context.
@@ -475,6 +477,9 @@ function assertOpenCodeHookDeactivationReady(plan, options = {}) {
     .map(operation => [comparablePath(operation.destinationPath), operation]));
   const desired = new Map(plan.operations.filter(operation => getOpenCodeActivationKind(plan, operation))
     .map(operation => [comparablePath(operation.destinationPath), operation]));
+  const stale = new Set((options.staleOperations || [])
+    .filter(operation => operation && operation.destinationPath)
+    .map(operation => comparablePath(operation.destinationPath)));
   const snapshot = new Map();
   for (const [key, operation] of openCodeActivationCandidates(plan, [...previous.values(), ...(options.legacyOperations || [])])) {
     const kind = getOpenCodeActivationKind(plan, operation);
@@ -486,7 +491,13 @@ function assertOpenCodeHookDeactivationReady(plan, options = {}) {
     const replacement = desired.get(key);
     // Validate planned activation even when its destination does not yet exist.
     // Recorded operations may name an unrelated source or use render-template.
-    if (replacement && (replacement.kind !== 'copy-file'
+    // A home-config merge deactivates the config: it strips the legacy
+    // `./plugins` registration and adds no plugin entry of its own.
+    const mergesHomeConfig = kind === 'config' && Boolean(replacement) && isOpenCodeHomeConfigMerge(replacement);
+    if (isSupersededOpenCodeEntrypoint(plan, kind, replacement, previous.get(key))) {
+      throw new Error(`Refusing OpenCode hook deactivation: ${operation.destinationPath} belongs to an older ECC OpenCode layout that repair cannot migrate. Re-run the ECC installer for OpenCode to upgrade it.`);
+    }
+    if (replacement && !mergesHomeConfig && (replacement.kind !== 'copy-file'
       || replacement.contentTransform !== expectedTransform)) {
       throw new Error(`Refusing OpenCode hook deactivation: unsupported activation operation at ${operation.destinationPath}`);
     }
@@ -505,6 +516,11 @@ function assertOpenCodeHookDeactivationReady(plan, options = {}) {
       continue;
     }
     const recorded = previous.get(key);
+    if (mergesHomeConfig) continue;
+    // A recorded entrypoint this plan no longer ships (e.g. the pre-v2
+    // plugins/ecc-hooks.ts) is removed during apply when its bytes are the
+    // ones ECC installed; anything else stays user-owned and refuses below.
+    if (!replacement && kind === 'plugin' && stale.has(key) && recorded && recorded.contentSha256 === digest) continue;
     if (inactive && (kind === 'plugin' || options.allowVerifiedLegacyRemoval || !recorded)) continue;
     if (options.allowVerifiedLegacyRemoval && recorded) {
       const verified = verifyManagedLegacyFile(recorded, {
@@ -519,6 +535,36 @@ function assertOpenCodeHookDeactivationReady(plan, options = {}) {
     }
   }
   return snapshot;
+}
+
+/**
+ * True when repair replays a recorded plugin entrypoint whose source the
+ * current tree no longer ships (an older OpenCode layout). Repair cannot
+ * migrate it; the installer's stale reconciliation can.
+ */
+function isSupersededOpenCodeEntrypoint(plan, kind, replacement, recorded) {
+  if (kind !== 'plugin' || !replacement || !recorded || !plan.sourceRoot) return false;
+  if (replacement.kind !== 'copy-file' || recorded.kind !== 'copy-file' || replacement.contentTransform) return false;
+  if (replacement.sourceRelativePath !== recorded.sourceRelativePath) return false;
+  if (!/^\.opencode\//.test(String(recorded.sourceRelativePath || '').replace(/\\/g, '/'))) return false;
+  return !fs.existsSync(path.join(plan.sourceRoot, String(recorded.sourceRelativePath || '')));
+}
+
+function removeVerifiedStaleOpenCodeActivations(plan, staleOperations, snapshot) {
+  for (const operation of staleOperations || []) {
+    if (!operation || !operation.destinationPath || getOpenCodeActivationKind(plan, operation) !== 'plugin') continue;
+    assertSafeInstallOperation(plan, operation);
+    const content = readInstalledFileNoFollow(plan, operation);
+    if (content === null) continue;
+    const digest = crypto.createHash('sha256').update(content).digest('hex');
+    const expected = snapshot && snapshot.has(comparablePath(operation.destinationPath))
+      ? snapshot.get(comparablePath(operation.destinationPath))
+      : operation.contentSha256;
+    if (digest !== operation.contentSha256 || digest !== expected) {
+      throw new Error(`Refusing OpenCode hook deactivation: activation changed after preflight at ${operation.destinationPath}`);
+    }
+    fs.unlinkSync(operation.destinationPath);
+  }
 }
 
 function assertOpenCodeActivationUnchanged(plan, operation, snapshot) {
@@ -708,7 +754,6 @@ function preflightQwenAgentOperations(plan) {
 function previewInstallPlan(plan) {
   preflightQwenAgentOperations(plan);
   assertOpenCodeScriptBoundary(plan);
-  assertOpenCodeHookDeactivationReady(plan);
   const migration = prepareStaleOperationsReconciliation(
     plan,
     prepareHookConsentMigration(
@@ -716,6 +761,7 @@ function previewInstallPlan(plan) {
       prepareUserOwnedFileGuard(plan, prepareClaudeSkillMigration(plan))
     )
   );
+  assertOpenCodeHookDeactivationReady(plan, { staleOperations: migration.staleOperationCandidates });
   const appliedPlan = {
     ...plan,
     operations: migration.appliedOperations,
@@ -780,7 +826,6 @@ function applyInstallPlanLocked(plan, dependencies = {}, settingsLockHeld = fals
   assertOpenCodeScriptBoundary(plan);
   assertOpenCodeLeaseCoverage(plan, dependencies.opencodeLease);
   const legacyActivation = inspectLegacyOpenCodeDeactivation(plan);
-  const activationSnapshot = assertOpenCodeHookDeactivationReady(plan);
   const migration = prepareStaleOperationsReconciliation(
     plan,
     prepareExcludedPathsReconciliation(
@@ -791,6 +836,9 @@ function applyInstallPlanLocked(plan, dependencies = {}, settingsLockHeld = fals
       )
     )
   );
+  const activationSnapshot = assertOpenCodeHookDeactivationReady(plan, {
+    staleOperations: migration.staleOperationCandidates,
+  });
   const appliedPlan = {
     ...plan,
     operations: migration.appliedOperations,
@@ -884,10 +932,13 @@ function applyInstallPlanLocked(plan, dependencies = {}, settingsLockHeld = fals
           ? filterMcpConfig(payload, disabledServers).config
           : payload;
 
-        const currentValue = readOptionalJsonObject(
+        const existingValue = readOptionalJsonObject(
           operation.destinationPath,
           'existing JSON config'
         );
+        const currentValue = isOpenCodeHomeConfigMerge(operation)
+          ? stripLegacyOpenCodePluginRegistration(existingValue)
+          : existingValue;
         const mergedValue = deepMergeJson(currentValue, filteredPayload);
         fs.writeFileSync(operation.destinationPath, formatJson(mergedValue), 'utf8');
         writtenDestinations.add(operation.destinationPath);
@@ -953,6 +1004,10 @@ function applyInstallPlanLocked(plan, dependencies = {}, settingsLockHeld = fals
         );
       }
 
+      // Plugin entrypoints from older layouts that this plan no longer ships
+      // must be gone before the inactive check: stale reconciliation below is
+      // best-effort, and a leftover active plugin would defeat the consent gate.
+      removeVerifiedStaleOpenCodeActivations(plan, migration.staleOperationCandidates, activationSnapshot);
       // Preserve main's activation safety gate before publishing ownership.
       assertOpenCodeHookDeactivationReady(plan, { requireInactive: true });
       // Stale records leave only the successful final state; the bridge and

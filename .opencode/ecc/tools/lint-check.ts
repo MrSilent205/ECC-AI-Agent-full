@@ -5,7 +5,7 @@
  * Supports cross-platform command generation and error handling.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
+import { defineTool, s } from "./schema.ts"
 import * as path from "path"
 import * as fs from "fs"
 
@@ -20,19 +20,21 @@ interface LintResult {
   error?: string
 }
 
-const lintCheckTool: ToolDefinition = tool({
+const lintCheckTool = defineTool({
+  name: "lint_check",
+  v1Name: "lint-check",
   description:
     "Detect linter for a target path and return command for check/fix runs. Supports cross-platform command generation.",
   args: {
-    target: tool.schema
+    target: s
       .string()
       .optional()
       .describe("File or directory to lint (default: current directory)"),
-    fix: tool.schema
+    fix: s
       .boolean()
       .optional()
       .describe("Enable auto-fix mode"),
-    linter: tool.schema
+    linter: s
       .enum(["biome", "eslint", "ruff", "pylint", "golangci-lint"])
       .optional()
       .describe("Optional linter override"),
