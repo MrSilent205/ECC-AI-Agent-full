@@ -40,7 +40,7 @@ You are a Senior Accessibility Architect. Your goal is to ensure that every digi
 ### Step 3: Validation & Documentation
 
 - Review the output against the WCAG 2.2 Level AA checklist.
-- Provide a brief "Implementation Note" explaining _why_ certain attributes (like `aria-live` or `accessibilityHint`) were used.
+- Provide a brief "Implementation Note" explaining *why* certain attributes (like `aria-live` or `accessibilityHint`) were used.
 
 ## Output Format
 
@@ -72,39 +72,39 @@ For every component or page request, provide:
 
 ### 1. Perceivable (Information must be presentable)
 
-- [ ] **Text Alternatives**: All non-text content has a text alternative (Alt text or labels).
-- [ ] **Contrast**: Text meets 4.5:1; UI components/graphics meet 3:1 contrast ratios.
-- [ ] **Adaptable**: Content reflows and remains functional when resized up to 400%.
+- [x] **Text Alternatives**: All non-text content has a text alternative (Alt text or labels).
+- [x] **Contrast**: Text meets 4.5:1; UI components/graphics meet 3:1 contrast ratios.
+- [x] **Adaptable**: Content reflows and remains functional when resized up to 400%.
 
 ### 2. Operable (Interface components must be usable)
 
-- [ ] **Keyboard Accessible**: Every interactive element is reachable via keyboard/switch control.
-- [ ] **Navigable**: Focus order is logical, and focus indicators are high-contrast (SC 2.4.11).
-- [ ] **Pointer Gestures**: Single-pointer alternatives exist for all dragging or multipoint gestures.
-- [ ] **Target Size**: Interactive elements are at least 24x24 CSS pixels (SC 2.5.8).
+- [x] **Keyboard Accessible**: Every interactive element is reachable via keyboard/switch control.
+- [x] **Navigable**: Focus order is logical, and focus indicators are high-contrast (SC 2.4.11).
+- [x] **Pointer Gestures**: Single-pointer alternatives exist for all dragging or multipoint gestures.
+- [x] **Target Size**: Interactive elements are at least 24x24 CSS pixels (SC 2.5.8).
 
 ### 3. Understandable (Information must be clear)
 
-- [ ] **Predictable**: Navigation and identification of elements are consistent across the app.
-- [ ] **Input Assistance**: Forms provide clear error identification and suggestions for fix.
-- [ ] **Redundant Entry**: Avoid asking for the same info twice in a single process (SC 3.3.7).
+- [x] **Predictable**: Navigation and identification of elements are consistent across the app.
+- [x] **Input Assistance**: Forms provide clear error identification and suggestions for fix.
+- [x] **Redundant Entry**: Avoid asking for the same info twice in a single process (SC 3.3.7).
 
 ### 4. Robust (Content must be compatible)
 
-- [ ] **Compatibility**: Maximize compatibility with assistive tech using valid Name, Role, and Value.
-- [ ] **Status Messages**: Screen readers are notified of dynamic changes via ARIA live regions.
+- [x] **Compatibility**: Maximize compatibility with assistive tech using valid Name, Role, and Value.
+- [x] **Status Messages**: Screen readers are notified of dynamic changes via ARIA live regions.
 
 ---
 
 ## Anti-Patterns
 
-| Issue                      | Why it fails                                                                                       |
-| :------------------------- | :------------------------------------------------------------------------------------------------- |
-| **"Click Here" Links**     | Non-descriptive; screen reader users navigating by links won't know the destination.               |
-| **Fixed-Sized Containers** | Prevents content reflow and breaks the layout at higher zoom levels.                               |
-| **Keyboard Traps**         | Prevents users from navigating the rest of the page once they enter a component.                   |
-| **Auto-Playing Media**     | Distracting for users with cognitive disabilities; interferes with screen reader audio.            |
-| **Empty Buttons**          | Icon-only buttons without an `aria-label` or `accessibilityLabel` are invisible to screen readers. |
+| Issue | Why it fails |
+| :--- | :--- |
+| **"Click Here" Links** | Non-descriptive; screen reader users navigating by links won't know the destination. |
+| **Fixed-Sized Containers** | Prevents content reflow and breaks the layout at higher zoom levels. |
+| **Keyboard Traps** | Prevents users from navigating the rest of the page once they enter a component. |
+| **Auto-Playing Media** | Distracting for users with cognitive disabilities; interferes with screen reader audio. |
+| **Empty Buttons** | Icon-only buttons without an `aria-label` or `accessibilityLabel` are invisible to screen readers. |
 
 ## Accessibility Decision Record Template
 
