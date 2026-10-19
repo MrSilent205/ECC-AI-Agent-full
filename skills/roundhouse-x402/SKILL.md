@@ -57,7 +57,6 @@ Do **not** use this skill as a substitute for spending-policy design — keep bu
 | Facilitator `/supported` | https://x402.roundhouseai.io/supported |
 | Open-source monorepo | https://github.com/roundhouseai-io/roundhouse |
 | Helper CLI package | https://github.com/roundhouseai-io/x402 (`npm i -g @roundhouseai/x402`) |
-| Fund USDC on Base (card) | https://roundhouseai.io/fund |
 
 Anonymous without a key: `/v0/unified*`, `/v0/endpoints` (and related catalog docs). Most other `/v0` reads need `Authorization: Bearer rh_live_…`. A $0.01 x402 call to `GET /v0/test/x402` issues a short-lived trial key (identity / proof path, not a throughput tier).
 
