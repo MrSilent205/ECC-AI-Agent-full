@@ -108,9 +108,22 @@ Always pass `--max`. Prefer re-running the identical command on retry (auth cach
 ### Facilitator (optional seller path)
 
 ```bash
-export X402_FACILITATOR_URL="https://x402.roundhouseai.io"
-export X402_FACILITATOR_FORMAT="standard"
 curl -sS https://x402.roundhouseai.io/supported
+```
+
+The upstream `@x402/*` middleware does not pick a facilitator from environment variables on its own — pass the URL to the facilitator client explicitly (same pattern as the upstream [`examples/typescript/servers`](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers)):
+
+```typescript
+import { paymentMiddleware, x402ResourceServer } from "@x402/express";
+import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { HTTPFacilitatorClient } from "@x402/core/server";
+
+const facilitatorClient = new HTTPFacilitatorClient({ url: "https://x402.roundhouseai.io" });
+
+app.use(paymentMiddleware(
+  { "GET /data": { accepts: [{ scheme: "exact", price: "$0.01", network: "eip155:8453", payTo: process.env.EVM_ADDRESS }] } },
+  new x402ResourceServer(facilitatorClient).register("eip155:8453", new ExactEvmScheme()),
+));
 ```
 
 Endpoints (standard x402):
