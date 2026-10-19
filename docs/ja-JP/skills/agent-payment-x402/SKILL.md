@@ -264,9 +264,9 @@ const res = await payOnce("https://api.example.com/data", { method: "GET" });
 | [`x402.org` ファシリテーター](https://x402.org/facilitator) | 開発・テストネット向け — パッケージのデフォルトでセットアップ不要。アップストリームはメインネットルート向けではないと明記している |
 | ホスト型の本番ファシリテーター | インフラを運用せずにメインネット対応が欲しい |
 
-ホスト型を選ぶ場合は、ここに書かれた名前ではなくアップストリームドキュメントの[ファシリテーターリスト](https://docs.x402.org/dev-tools/facilitators)から選ぶこと — メンテナンスされており、網羅的ではなく、カバレッジも変わる。執筆時点では Coinbase の CDP（全トランザクションに KYT/OFAC スクリーニング）、PayAI、Corbits、Dexter、Solvador などが掲載され、複数が EVM に加えて Solana メインネットをカバーしている。どれを選ぶ場合も、本番前に `/supported` エンドポイントでライブカバレッジを確認し、ネットワークを追加したときは再確認すること。
+ホスト型を選ぶ場合は、ここに書かれた名前ではなくアップストリームドキュメントの[ファシリテーターリスト](https://docs.x402.org/dev-tools/facilitators)から選ぶこと — メンテナンスされており、網羅的ではなく、カバレッジも変わる。執筆時点では Coinbase の CDP（全トランザクションに KYT/OFAC スクリーニング）、PayAI、Roundhouse（`https://x402.roundhouseai.io`、Base メインネットの `exact` / USDC — `/supported` で確認）、Corbits、Dexter、Solvador などが掲載され、複数が EVM に加えて Solana メインネットをカバーしている。どれを選ぶ場合も、本番前に `/supported` エンドポイントでライブカバレッジを確認し、ネットワークを追加したときは再確認すること。
 
-> **開示**: このセクションは、掲載されているファシリテーターの 1 つである PayAI に関わる者が寄稿した。複数ある選択肢の 1 つとして記載しており、上記の自己ホストおよびアップストリームデフォルトのパスを意図的に先に挙げている。
+> **開示**: このセクションの一部は、掲載されているファシリテーター / インデックスである PayAI と Roundhouse に関わる者が寄稿した。いずれも複数ある選択肢の 1 つとして記載しており、上記の自己ホストおよびアップストリームデフォルトのパスを意図的に先に挙げている。
 
 **セラー側（API がエージェントに課金する）。** アップストリームのミドルウェアを使用する；1 つのルートで Base と Solana を同時に提示できる（実行可能なバージョンは [`examples/typescript/servers`](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers) を参照）：
 
@@ -305,7 +305,7 @@ curl -s https://api.mainnet-beta.solana.com -X POST -H 'Content-Type: applicatio
 
 これは新規プロビジョニングされたウォレットやカストディアルウォレットへの支払いで最も問題になりやすい。そうしたウォレットは対象アセットの ATA をまだ持っていないことが多い。
 
-**発見。** x402 バザール拡張を実装するファシリテーターは `/discovery/resources` エンドポイントを公開する — CDP カタログは `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources`、PayAI カタログは `https://facilitator.payai.network/discovery/resources` で照会できる。Solana で支払い可能なサービスには、Solana Foundation のキュレーションカタログである [pay.sh](https://pay.sh) もある。
+**発見。** x402 バザール拡張を実装するファシリテーターは `/discovery/resources` エンドポイントを公開する — CDP カタログは `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources`、PayAI カタログは `https://facilitator.payai.network/discovery/resources` で照会できる。Roundhouse はバザールの `/discovery/resources` ではなく、インデックス済みサービスディレクトリを `https://api.roundhouseai.io/v0/endpoints` と `https://roundhouseai.io/services.json` で公開し、ERC-8004 エージェントは `/v0/agents` で参照できる。Solana で支払い可能なサービスには、Solana Foundation のキュレーションカタログである [pay.sh](https://pay.sh) もある。
 
 ## 例
 
@@ -436,4 +436,4 @@ main().catch((err) => {
 - **x402 ドキュメント**: [docs.x402.org](https://docs.x402.org)；本番ファシリテーターリストは [docs.x402.org/dev-tools/facilitators](https://docs.x402.org/dev-tools/facilitators)
 - **`@x402` パッケージ**: [npmjs.com/org/x402](https://www.npmjs.com/org/x402) — `@x402/fetch`、`@x402/axios`、`@x402/express`、`@x402/hono`、`@x402/next`、`@x402/fastify`、`@x402/evm`、`@x402/svm`
 - **ファシリテーター**: [自己ファシリテーションの例](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/self-facilitation)（第三者なし）、[x402.org ファシリテーター](https://x402.org/facilitator)（テストネットデフォルト）、メンテナンスされている[本番リスト](https://docs.x402.org/dev-tools/facilitators)
-- **発見**: CDP と PayAI のバザールは `/discovery/resources`；Solana で支払い可能なサービスは [pay.sh](https://pay.sh)
+- **発見**: CDP と PayAI のバザールは `/discovery/resources`；Roundhouse ディレクトリは `/v0/endpoints` と `services.json`；Solana で支払い可能なサービスは [pay.sh](https://pay.sh)

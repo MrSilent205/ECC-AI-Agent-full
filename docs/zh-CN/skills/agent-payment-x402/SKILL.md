@@ -264,9 +264,9 @@ const res = await payOnce("https://api.example.com/data", { method: "GET" });
 | [`x402.org` 结算器](https://x402.org/facilitator) | 开发与测试网——它是包的默认值，无需配置，上游明确说明它不适用于主网路由 |
 | 托管的生产结算器 | 你希望获得主网覆盖而不必自己运维基础设施 |
 
-选择托管方案时，请从上游文档的[结算器列表](https://docs.x402.org/dev-tools/facilitators)中挑选，而不是照搬这里的名字——该列表有人维护、并不详尽，且覆盖范围会变化。撰写时它包含 Coinbase 的 CDP（对每笔交易执行 KYT/OFAC 筛查）、PayAI、Corbits、Dexter、Solvador 等，其中若干同时覆盖 EVM 与 Solana 主网。无论选择哪一个，上线前都要在其 `/supported` 端点确认实时覆盖范围，并在新增网络时重新确认。
+选择托管方案时，请从上游文档的[结算器列表](https://docs.x402.org/dev-tools/facilitators)中挑选，而不是照搬这里的名字——该列表有人维护、并不详尽，且覆盖范围会变化。撰写时它包含 Coinbase 的 CDP（对每笔交易执行 KYT/OFAC 筛查）、PayAI、Roundhouse（`https://x402.roundhouseai.io`，Base 主网 `exact` / USDC——以 `/supported` 为准）、Corbits、Dexter、Solvador 等，其中若干同时覆盖 EVM 与 Solana 主网。无论选择哪一个，上线前都要在其 `/supported` 端点确认实时覆盖范围，并在新增网络时重新确认。
 
-> **披露**：本节由参与 PayAI（所列结算器之一）的人贡献。它只是若干选项之一，上面的自托管与上游默认路径是有意排在前面的。
+> **披露**：本节部分内容由与 PayAI 和 Roundhouse（所列结算器 / 索引之二）有关联的人贡献。每一项都只是若干选项之一，上面的自托管与上游默认路径是有意排在前面的。
 
 **卖方侧（API 向代理收费）。** 使用上游中间件；一条路由可以同时提供 Base 和 Solana（可运行版本参见 [`examples/typescript/servers`](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers)）：
 
@@ -305,7 +305,7 @@ curl -s https://api.mainnet-beta.solana.com -X POST -H 'Content-Type: applicatio
 
 这个问题在向新开通的钱包或托管钱包付款时最容易出现，这类钱包往往还没有该资产的 ATA。
 
-**发现。** 实现 x402 集市扩展的结算器会公开 `/discovery/resources` 端点——可在 `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources` 查询 CDP 目录，在 `https://facilitator.payai.network/discovery/resources` 查询 PayAI 目录。对于 Solana 可付费服务，还有 Solana 基金会的精选目录 [pay.sh](https://pay.sh)。
+**发现。** 实现 x402 集市扩展的结算器会公开 `/discovery/resources` 端点——可在 `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources` 查询 CDP 目录，在 `https://facilitator.payai.network/discovery/resources` 查询 PayAI 目录。Roundhouse 不使用集市的 `/discovery/resources`，而是通过 `https://api.roundhouseai.io/v0/endpoints` 与 `https://roundhouseai.io/services.json` 发布已索引的服务目录，并通过 `/v0/agents` 提供 ERC-8004 代理读取。对于 Solana 可付费服务，还有 Solana 基金会的精选目录 [pay.sh](https://pay.sh)。
 
 ## 示例
 
@@ -436,4 +436,4 @@ main().catch((err) => {
 - **x402 文档**：[docs.x402.org](https://docs.x402.org)；生产结算器列表位于 [docs.x402.org/dev-tools/facilitators](https://docs.x402.org/dev-tools/facilitators)
 - **`@x402` 包**：[npmjs.com/org/x402](https://www.npmjs.com/org/x402) — `@x402/fetch`、`@x402/axios`、`@x402/express`、`@x402/hono`、`@x402/next`、`@x402/fastify`、`@x402/evm`、`@x402/svm`
 - **结算器**：[自结算示例](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/self-facilitation)（无第三方）、[x402.org 结算器](https://x402.org/facilitator)（测试网默认）、以及有人维护的[生产列表](https://docs.x402.org/dev-tools/facilitators)
-- **发现**：CDP 与 PayAI 集市位于 `/discovery/resources`；Solana 可付费服务见 [pay.sh](https://pay.sh)
+- **发现**：CDP 与 PayAI 集市位于 `/discovery/resources`；Roundhouse 目录见 `/v0/endpoints` 与 `services.json`；Solana 可付费服务见 [pay.sh](https://pay.sh)

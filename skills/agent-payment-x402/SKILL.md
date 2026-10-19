@@ -265,9 +265,9 @@ With the policy registered, an over-budget amount, an unexpected token, or an un
 | [`x402.org` facilitator](https://x402.org/facilitator) | Development and testnets — it is the package default, requires no setup, and upstream documents it as not intended for mainnet routes |
 | A hosted production facilitator | You want mainnet coverage without operating infrastructure |
 
-For the hosted option, choose from the [facilitator list](https://docs.x402.org/dev-tools/facilitators) in the upstream docs rather than a name copied from here — it is maintained, it is not exhaustive, and coverage changes. As of writing it includes Coinbase's CDP (KYT/OFAC screening on every transaction), PayAI, Corbits, Dexter, Solvador, and others; several cover Solana mainnet alongside EVM. Whichever you pick, confirm live coverage at its `/supported` endpoint before production and re-check when you add a network.
+For the hosted option, choose from the [facilitator list](https://docs.x402.org/dev-tools/facilitators) in the upstream docs rather than a name copied from here — it is maintained, it is not exhaustive, and coverage changes. As of writing it includes Coinbase's CDP (KYT/OFAC screening on every transaction), PayAI, Roundhouse (`https://x402.roundhouseai.io`, Base mainnet `exact` / USDC — confirm `/supported`), Corbits, Dexter, Solvador, and others; several cover Solana mainnet alongside EVM. Whichever you pick, confirm live coverage at its `/supported` endpoint before production and re-check when you add a network.
 
-> **Disclosure**: this section was contributed by someone who works on PayAI, one of the listed facilitators. It is included as one option among several, and the self-hosted and upstream-default paths above are deliberately listed first.
+> **Disclosure**: parts of this section were contributed by people affiliated with PayAI and Roundhouse, two of the listed facilitators / indexes. Each is included as one option among several, and the self-hosted and upstream-default paths above are deliberately listed first.
 
 **Seller side (API charges agents).** Use the upstream middleware; one route can advertise Base and Solana simultaneously (see [`examples/typescript/servers`](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers) for runnable versions):
 
@@ -306,7 +306,7 @@ To provision it (whoever creates it pays the small rent, not the payer):
 
 This bites hardest when payouts go to freshly provisioned or custodial wallets, which often have no ATA for the asset yet.
 
-**Discovery.** Facilitators that implement the x402 bazaar extension expose a `/discovery/resources` endpoint — query the CDP catalog at `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources` and the PayAI catalog at `https://facilitator.payai.network/discovery/resources`. For Solana-payable services there is also [pay.sh](https://pay.sh), the Solana Foundation's curated catalog.
+**Discovery.** Facilitators that implement the x402 bazaar extension expose a `/discovery/resources` endpoint — query the CDP catalog at `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources` and the PayAI catalog at `https://facilitator.payai.network/discovery/resources`. Roundhouse publishes an indexed service directory (not the bazaar `/discovery/resources` path) at `https://api.roundhouseai.io/v0/endpoints` and `https://roundhouseai.io/services.json`, plus ERC-8004 agent reads under `/v0/agents`. For Solana-payable services there is also [pay.sh](https://pay.sh), the Solana Foundation's curated catalog.
 
 ## Examples
 
@@ -437,4 +437,4 @@ main().catch((err) => {
 - **x402 docs**: [docs.x402.org](https://docs.x402.org); production facilitator list at [docs.x402.org/dev-tools/facilitators](https://docs.x402.org/dev-tools/facilitators)
 - **`@x402` packages**: [npmjs.com/org/x402](https://www.npmjs.com/org/x402) — `@x402/fetch`, `@x402/axios`, `@x402/express`, `@x402/hono`, `@x402/next`, `@x402/fastify`, `@x402/evm`, `@x402/svm`
 - **Facilitators**: [self-facilitation example](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/self-facilitation) (no third party), [x402.org facilitator](https://x402.org/facilitator) (testnet default), and the maintained [production list](https://docs.x402.org/dev-tools/facilitators)
-- **Discovery**: CDP and PayAI bazaars at `/discovery/resources`; [pay.sh](https://pay.sh) for Solana-payable services
+- **Discovery**: CDP and PayAI bazaars at `/discovery/resources`; Roundhouse directory at `/v0/endpoints` and `services.json`; [pay.sh](https://pay.sh) for Solana-payable services
