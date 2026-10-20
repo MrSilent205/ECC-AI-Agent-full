@@ -92,7 +92,7 @@ Do not assume `npm test`. The commands in the steps and examples below use `<tes
 1. **Run the package-manager detector** (ships with ECC):
 
    ```bash
-   node scripts/setup-package-manager.js --detect
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/setup-package-manager.js" --detect
    ```
 
    It resolves the package manager (npm / pnpm / yarn / bun) from, in order: `CLAUDE_PACKAGE_MANAGER`, `.claude/package-manager.json`, the `package.json` `packageManager` field, the lockfile, then global config.
