@@ -398,7 +398,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate agent output against the 5-axis rubric"
     )
-    parser.add_argument("--task", help="Task description (file path or inline text)")
+    parser.add_argument(
+        "--task",
+        help=(
+            "Task description (file path or inline text); when omitted with --output and non-TTY "
+            "stdin, read task text until EOF and wait if the input remains open"
+        ),
+    )
     parser.add_argument("--output", help="Agent output to evaluate (file path)")
     parser.add_argument("--interactive", action="store_true", help="Prompt for task and read output from stdin")
     args = parser.parse_args()

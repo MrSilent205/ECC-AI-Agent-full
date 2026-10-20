@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 import pytest
 from scripts.runner import (
-    SANDBOX_BASE,
     _parse_stream_json,
     _safe_sandbox_dir,
     _setup_sandbox,
@@ -29,6 +28,13 @@ class _FakeScenario:
     id: str
     prompt: str = "do nothing"
     setup_commands: tuple[str, ...] = ()
+
+
+@pytest.fixture(autouse=True)
+def isolated_sandbox_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scripts.runner.SANDBOX_BASE", tmp_path / "sandbox")
 
 
 def _directory_symlink(link: Path, target: Path) -> None:
@@ -79,7 +85,10 @@ class TestDirectorySymlinkFixture:
 
 
 class TestSafeSandboxDirectory:
-    def test_empty_id_cannot_delete_the_shared_base(self) -> None:
+    def test_empty_id_cannot_delete_the_shared_base(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("scripts.runner.SANDBOX_BASE", tmp_path / "sandbox")
         with (
             patch("scripts.runner.Path.exists", return_value=True),
             patch("scripts.runner.shutil.rmtree") as remove,
@@ -93,13 +102,21 @@ class TestSafeSandboxDirectory:
             mkdir.assert_not_called()
             execute.assert_not_called()
 
-    def test_resolved_base_is_not_a_scenario_directory(self) -> None:
-        with patch("scripts.runner.Path.resolve", return_value=SANDBOX_BASE):
+    def test_resolved_base_is_not_a_scenario_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = tmp_path / "sandbox"
+        monkeypatch.setattr("scripts.runner.SANDBOX_BASE", base)
+        with patch("scripts.runner.Path.resolve", return_value=base):
             with pytest.raises(ValueError, match="sandbox"):
                 _safe_sandbox_dir("alias")
 
-    def test_valid_id_keeps_existing_sanitization(self) -> None:
-        assert _safe_sandbox_dir("scenario/one") == SANDBOX_BASE / "scenario_one"
+    def test_valid_id_keeps_existing_sanitization(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = tmp_path / "sandbox"
+        monkeypatch.setattr("scripts.runner.SANDBOX_BASE", base)
+        assert _safe_sandbox_dir("scenario/one") == base / "scenario_one"
 
     def test_resolved_escape_is_still_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
