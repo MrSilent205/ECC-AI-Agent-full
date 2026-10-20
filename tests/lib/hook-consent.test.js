@@ -8,6 +8,7 @@ const {
   HOOK_CAPABILITY_GROUPS,
   assertHookConsentReady,
   disableOpenCodeHookPluginRegistration,
+  parseJsonc,
   formatHookCapabilityDisclosure,
   getRecordedHookConsent,
   isHookRuntimeOperation,
@@ -188,6 +189,36 @@ function runTests() {
     )), {
       instructions: ['AGENTS.md'],
     });
+  })) passed++; else failed++;
+
+  if (test('tolerates JSONC comments and trailing commas in OpenCode config', () => {
+    const jsonc = `{
+  // my note
+  "plugin": [
+    "ecc-universal", // trailing note
+    "./plugins", /* block */
+  ],
+  "url": "http://example.com//not-a-comment",
+}
+`;
+    const transformed = disableOpenCodeHookPluginRegistration(jsonc, '.opencode/opencode.json');
+    assert.deepStrictEqual(JSON.parse(transformed), {
+      plugin: ['ecc-universal'],
+      url: 'http://example.com//not-a-comment',
+    });
+  })) passed++; else failed++;
+
+  if (test('JSONC stripping leaves comment-like and comma-like text inside strings alone', () => {
+    const jsonc = '{"a": "x, ]", "b": "q\\" // /* y", /* c */ "c": [1, 2,\n],}';
+    assert.deepStrictEqual(parseJsonc(jsonc), { a: 'x, ]', b: 'q" // /* y', c: [1, 2] });
+    assert.throws(() => parseJsonc('{"a": 1,, }'));
+  })) passed++; else failed++;
+
+  if (test('JSONC parsing rejects comments that would hide broken input', () => {
+    assert.throws(() => parseJsonc('{"a": 1/* note */2}'));
+    assert.throws(() => parseJsonc('{"a": 1} /* unfinished'), /Unterminated block comment/);
+    assert.throws(() => disableOpenCodeHookPluginRegistration('{"plugin": []} /*', '.opencode/opencode.json'),
+      /Failed to parse \.opencode\/opencode\.json/);
   })) passed++; else failed++;
 
   if (test('historical OpenCode activation bytes alone do not imply hook consent', () => {
