@@ -142,7 +142,12 @@ git merge feat/billing
 ECC now includes a helper for external tmux-pane orchestration with separate git worktrees:
 
 ```bash
-node scripts/orchestrate-worktrees.js plan.json --execute
+# Resolve the ECC root in every install mode: plugin root, standalone install
+# (~/.claude or $CLAUDE_CONFIG_DIR), then an ECC checkout run from its root.
+ECC_ROOT="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+[ -f "$ECC_ROOT/scripts/orchestrate-worktrees.js" ] || ECC_ROOT="$PWD"
+[ -f "$ECC_ROOT/scripts/orchestrate-worktrees.js" ] || { echo "ECC scripts not found (set CLAUDE_PLUGIN_ROOT or run from an ECC checkout)" >&2; exit 1; }
+node "$ECC_ROOT/scripts/orchestrate-worktrees.js" plan.json --execute
 ```
 
 Example `plan.json`:
