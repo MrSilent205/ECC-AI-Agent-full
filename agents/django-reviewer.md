@@ -51,7 +51,7 @@ When invoked:
       print(order.user.email)
   ```
 - **Missing `atomic()` for multi-step writes**: Use `transaction.atomic()` for any sequence of DB writes
-- **`bulk_create` without `update_conflicts`**: Silent data loss on duplicate keys
+- **`bulk_create(ignore_conflicts=True)`**: Duplicate rows can be silently skipped; use this only when that behavior is intended. Use `update_conflicts=True` only when an upsert is required.
 - **`get()` without `DoesNotExist` handling**: Unhandled exception risk
 - **Queryset used after `delete()`**: Stale queryset reference
 

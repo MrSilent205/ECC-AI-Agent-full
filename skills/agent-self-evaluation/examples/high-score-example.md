@@ -1,15 +1,15 @@
 # High-Score Example: Adding Retry Logic
 
 ## Task
-> Add retry logic with exponential backoff to all HTTP requests in the API client. Max 3 retries, initial delay 1s, max delay 30s.
+> Add retry logic with exponential backoff to retry-safe HTTP requests in the API client. Max 3 retries, initial delay 1s, max delay 30s.
 
 ## Agent Output
 
 ### Summary
-Added `httpx.HTTPTransport` with retry configuration to the shared `ApiClient` class. All HTTP methods (GET, POST, PUT, DELETE) now retry on 429, 5xx, and connection errors with exponential backoff. 42 tests pass. Single PR ready to merge.
+Added a custom `RetryTransport` to the shared `ApiClient` class. GET, PUT, and DELETE retry on 429, 5xx, and connection errors with exponential backoff; POST is not retried. 42 tests pass. Single PR ready to merge.
 
 ### Files Changed
-- `src/api_client.py` — Added `RetryTransport` wrapper with `httpx.HTTPTransport(retries=3)` and exponential backoff configured via `httpx.Limits`
+- `src/api_client.py` — Added a `RetryTransport` wrapper with explicit 429/5xx response handling and exponential backoff; the inner `httpx.HTTPTransport(retries=3)` retries connection errors and timeouts, while `httpx.Limits` configures connection-pool settings
 - `tests/test_api_client.py` — Added 8 tests: happy path, retry on 429, retry on 503, max retries exhausted, timeout, backoff timing assertion, idempotent GET retry, no-retry on 4xx (except 429)
 
 ### Verification
@@ -51,7 +51,7 @@ AGENT SELF-EVALUATION REPORT
 
   Completeness      ████░ 4/5
     + Edge cases addressed (5 specific scenarios listed)
-    + Error handling present across all HTTP methods
+    + Error handling present for all retry-safe methods
     → Missing: connection pool exhaustion handling (what happens when all
       connections are in retry state?) — minor gap, not blocking.
 

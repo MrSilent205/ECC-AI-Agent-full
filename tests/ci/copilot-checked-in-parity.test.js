@@ -62,6 +62,7 @@ const tests = [
     const copySkillsRoot = path.join(REPO_ROOT, '.github', 'skills');
     const sourceSkills = listDirectories(sourceSkillsRoot);
     const copiedSkills = listDirectories(copySkillsRoot);
+    assert.ok(copiedSkills.length > 0, 'Copilot skills directory must contain at least one skill');
     assert.deepStrictEqual(
       copiedSkills,
       copiedSkills.filter(skill => sourceSkills.includes(skill)),

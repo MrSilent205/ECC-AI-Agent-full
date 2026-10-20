@@ -28,10 +28,10 @@ The `scripts/evaluate.py` script can be used as a standalone tool:
 
 ```bash
 # Pipe agent output directly
-echo "Your agent response here" | python3 skills/agent-self-evaluation/scripts/evaluate.py
+echo "Your agent response here" | python3 .github/skills/agent-self-evaluation/scripts/evaluate.py
 
 # From files
-python3 skills/agent-self-evaluation/scripts/evaluate.py --task task.txt --output response.txt
+python3 .github/skills/agent-self-evaluation/scripts/evaluate.py --task task.txt --output response.txt
 ```
 
 To integrate it into hooks, capture the last agent output to a file first, then run the evaluator. For lightweight reminders after shell-based verification, use a simple supported matcher string:

@@ -209,8 +209,10 @@ python manage.py collectstatic --clear --noinput
 ### runserver Failures
 
 ```bash
-# Port already in use
-lsof -ti:8000 | xargs kill -9
+# Port already in use — inspect the process before taking action
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+# Ask the user before stopping a process; if approved, use the selected PID:
+kill -TERM PID
 python manage.py runserver
 
 # Use alternate port

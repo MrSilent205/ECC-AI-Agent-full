@@ -135,8 +135,33 @@ cd PROJECT_DIR
 git log --oneline | wc -l
 # If > 1, history was not cleaned — FAIL
 
-# Search history for potential secrets
-git log -p | grep -iE '(password|secret|api.?key|token)' | head -20
+# Search history without printing matching lines or secret values
+python3 - <<'PY'
+import re
+import subprocess
+
+pattern = re.compile(r"(?i)(password|secret|api.?key|token)")
+process = subprocess.Popen(
+    ["git", "log", "--format=COMMIT:%H", "--no-ext-diff", "--no-textconv", "-p"],
+    stdout=subprocess.PIPE,
+    text=True,
+    errors="replace",
+)
+commit = ""
+path = ""
+for line in process.stdout:
+    if line.startswith("COMMIT:"):
+        commit = line[7:].strip()
+    elif line.startswith("diff --git "):
+        match = re.match(r"diff --git a/(.+) b/(.+)$", line.rstrip())
+        path = match.group(2) if match else "<unparsed-path>"
+    elif line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
+        match = pattern.search(line)
+        if match:
+            print(f"{commit[:12]} {path} {match.group(1).lower()}")
+if process.wait():
+    raise SystemExit("git history scan failed")
+PY
 ```
 
 ### Step 7: Unreadable Files (WARNING)

@@ -74,10 +74,12 @@ Use the template from `templates/evaluation-report.md`. The report must include:
 ```
 - One-line summary
 - 5-axis scorecard (score + evidence per axis)
-- Overall score (simple average, rounded to 1 decimal)
+- Overall score (simple average, rounded to 1 decimal), only when all axes are assessed
 - 1-3 specific improvements ranked by impact
 - Self-check: "Would the user agree with this assessment?"
 ```
+
+The keyword-based evaluator caps Accuracy at 3 when no verification signal is detected. It cannot compare task requirements with output semantics, so it marks Completeness as unassessed. Show `N/A` and require manual review before assigning an overall score or verdict; do not infer a complete score from the absence of detected gap phrases. The examples may show human-assessed Completeness scores.
 
 ### Step 4: Apply the Improvement
 

@@ -50,7 +50,7 @@ For each item to remove:
 - Start with SAFE items only
 - Remove one category at a time: deps -> exports -> files -> duplicates
 - Run tests after each batch
-- Commit after each batch
+- Before committing a batch, show the proposed changes and commit message and ask for explicit user approval. If approval is not provided, leave the batch uncommitted.
 
 ### 4. Consolidate Duplicates
 - Find duplicate components/utilities
@@ -69,7 +69,7 @@ Before removing:
 After each batch:
 - [ ] Build succeeds
 - [ ] Tests pass
-- [ ] Committed with descriptive message
+- [ ] Commit only after explicit user approval, with a descriptive message; otherwise leave the batch uncommitted
 
 ## Key Principles
 

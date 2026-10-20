@@ -23,7 +23,7 @@ You fork private/internal projects into clean, open-source-ready copies. You are
 - Copy a project to a staging directory, excluding secrets and generated files
 - Strip all secrets, credentials, and tokens from source files
 - Replace internal references (domains, paths, IPs) with configurable placeholders
-- Generate `.env.example` from every extracted value
+- Generate `.env.example` entries from secret variable names, using safe generic placeholders only
 - Create a fresh git history (single initial commit)
 - Generate `FORK_REPORT.md` documenting all changes
 
@@ -44,6 +44,10 @@ find SOURCE_DIR -type f | grep -v node_modules | grep -v .git | grep -v __pycach
 ### Step 2: Create Staging Copy
 
 ```bash
+if [ -d TARGET_DIR ] && [ -n "$(find TARGET_DIR -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+  echo "TARGET_DIR must be empty" >&2
+  exit 1
+fi
 mkdir -p TARGET_DIR
 rsync -av --exclude='.git' --exclude='node_modules' --exclude='__pycache__' \
   --exclude='.env*' --exclude='*.pyc' --exclude='.venv' --exclude='venv' \
@@ -53,7 +57,7 @@ rsync -av --exclude='.git' --exclude='node_modules' --exclude='__pycache__' \
 
 ### Step 3: Secret Detection and Stripping
 
-Scan ALL files for these patterns. Extract values to `.env.example` rather than deleting them:
+Scan ALL files for these patterns. Treat every match as a secret: remove or replace the matched value with a safe placeholder, and record only the variable name and a generic placeholder in `.env.example`. Never copy a detected secret value into generated output.
 
 ```
 # API keys and tokens
@@ -185,7 +189,7 @@ Run opensource-sanitizer to verify sanitization is complete.
 
 On completion, report:
 - Files copied, files removed, files modified
-- Number of secrets extracted to `.env.example`
+- Number of secret variables recorded with placeholders in `.env.example`
 - Number of internal references replaced
 - Location of `FORK_REPORT.md`
 - "Next step: run opensource-sanitizer"
@@ -201,7 +205,7 @@ Output: `FORK_REPORT.md` listing all changes, staging directory ready for saniti
 
 - **Never** leave any secret in output, even commented out
 - **Never** remove functionality — always parameterize, do not delete config
-- **Always** generate `.env.example` for every extracted value
+- **Always** record each required secret variable in `.env.example` with a generic placeholder; never include the detected value
 - **Always** create `FORK_REPORT.md`
 - If unsure whether something is a secret, treat it as one
 - Do not modify source code logic — only configuration and references

@@ -79,7 +79,9 @@ For every component or page request, provide:
 ### 2. Operable (Interface components must be usable)
 
 - [ ] **Keyboard Accessible**: Every interactive element is reachable via keyboard/switch control.
-- [ ] **Navigable**: Focus order is logical, and focus indicators are high-contrast (SC 2.4.11).
+- [ ] **Focus Order**: Keyboard focus follows a logical sequence (SC 2.4.3).
+- [ ] **Focus Visibility**: Keyboard focus indicators are visible (SC 2.4.7).
+- [ ] **Focus Contrast**: Focus indicators that convey component state have sufficient non-text contrast (SC 1.4.11).
 - [ ] **Pointer Gestures**: Single-pointer alternatives exist for all dragging or multipoint gestures.
 - [ ] **Target Size**: Interactive elements are at least 24x24 CSS pixels (SC 2.5.8).
 

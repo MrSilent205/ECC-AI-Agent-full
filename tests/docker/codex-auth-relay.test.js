@@ -18,36 +18,39 @@ async function availablePort() {
   return port;
 }
 
-test('actual relay forwards callback bytes and closes its upstream when the client leaves', { timeout: 10000 }, async t => {
+test('actual relay forwards callback bytes and closes its upstream when the client leaves', { timeout: 10000 }, async () => {
   const upstreamSockets = new Set();
   const upstream = net.createServer(socket => {
     upstreamSockets.add(socket);
     socket.on('close', () => upstreamSockets.delete(socket));
     socket.on('data', data => socket.write(data));
   });
-  upstream.listen(0, '127.0.0.1');
-  await once(upstream, 'listening');
-  const relayPort = await availablePort();
-  const child = spawn(process.execPath, [script], { env: { ...process.env,
-    ECC_RELAY_LISTEN: String(relayPort), ECC_RELAY_TARGET: String(upstream.address().port) } });
-  t.after(async () => {
-    child.kill();
+  let child;
+  let client;
+  try {
+    upstream.listen(0, '127.0.0.1');
+    await once(upstream, 'listening');
+    const relayPort = await availablePort();
+    child = spawn(process.execPath, [script], { env: { ...process.env,
+      ECC_RELAY_LISTEN: String(relayPort), ECC_RELAY_TARGET: String(upstream.address().port) } });
+    const startup = await Promise.race([once(child.stdout, 'data'), once(child, 'exit')]);
+    assert.ok(Buffer.isBuffer(startup[0]), 'Relay must start before exiting');
+    client = net.connect(relayPort, '127.0.0.1');
+    await once(client, 'connect');
+    client.write('GET /auth/callback?state=fixture&code=fixture HTTP/1.1\r\n\r\n');
+    const [bytes] = await once(client, 'data');
+    assert.equal(bytes.toString(), 'GET /auth/callback?state=fixture&code=fixture HTTP/1.1\r\n\r\n');
+    const socket = [...upstreamSockets][0];
+    const closed = once(socket, 'close');
+    client.destroy();
+    await closed;
+    assert.equal(child.exitCode, null);
+  } finally {
+    if (child && child.exitCode === null) child.kill();
+    if (client) client.destroy();
     for (const socket of upstreamSockets) socket.destroy();
-    await new Promise(resolve => upstream.close(resolve));
-  });
-  const startup = await Promise.race([once(child.stdout, 'data'), once(child, 'exit')]);
-  assert.ok(Buffer.isBuffer(startup[0]), 'Relay must start before exiting');
-  const client = net.connect(relayPort, '127.0.0.1');
-  t.after(() => client.destroy());
-  await once(client, 'connect');
-  client.write('GET /auth/callback?state=fixture&code=fixture HTTP/1.1\r\n\r\n');
-  const [bytes] = await once(client, 'data');
-  assert.equal(bytes.toString(), 'GET /auth/callback?state=fixture&code=fixture HTTP/1.1\r\n\r\n');
-  const socket = [...upstreamSockets][0];
-  const closed = once(socket, 'close');
-  client.destroy();
-  await closed;
-  assert.equal(child.exitCode, null);
+    if (upstream.listening) await new Promise(resolve => upstream.close(resolve));
+  }
 });
 
 for (const value of ['0', '-1', '65536', '1.5', 'not-a-port']) {
@@ -71,20 +74,23 @@ for (const port of ['1455', '24567']) {
   });
 }
 
-test('occupied listener reports a bounded relay diagnostic without a startup banner', { timeout: 5000 }, async t => {
+test('occupied listener reports a bounded relay diagnostic without a startup banner', { timeout: 5000 }, async () => {
   const occupied = net.createServer();
-  occupied.listen(0, '0.0.0.0');
-  await once(occupied, 'listening');
-  t.after(() => new Promise(resolve => occupied.close(resolve)));
-  const port = occupied.address().port;
-  const child = spawn(process.execPath, [script], { env: { ...process.env,
-    ECC_RELAY_LISTEN: String(port), ECC_RELAY_TARGET: String(port === 1455 ? 1456 : 1455) } });
-  let stderr = '';let stdout = '';
-  child.stderr.on('data', chunk => { stderr += chunk; });
-  child.stdout.on('data', chunk => { stdout += chunk; });
-  const [code] = await once(child, 'close');
-  assert.equal(code, 1);
-  assert.match(stderr, /^codex-auth-relay: .*EADDRINUSE/m);
-  assert.doesNotMatch(stderr, /Unhandled 'error' event/);
-  assert.equal(stdout, '');
+  try {
+    occupied.listen(0, '0.0.0.0');
+    await once(occupied, 'listening');
+    const port = occupied.address().port;
+    const child = spawn(process.execPath, [script], { env: { ...process.env,
+      ECC_RELAY_LISTEN: String(port), ECC_RELAY_TARGET: String(port === 1455 ? 1456 : 1455) } });
+    let stderr = '';let stdout = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    const [code] = await once(child, 'close');
+    assert.equal(code, 1);
+    assert.match(stderr, /^codex-auth-relay: .*EADDRINUSE/m);
+    assert.doesNotMatch(stderr, /Unhandled 'error' event/);
+    assert.equal(stdout, '');
+  } finally {
+    if (occupied.listening) await new Promise(resolve => occupied.close(resolve));
+  }
 });

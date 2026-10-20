@@ -6,7 +6,7 @@ Copy this template and fill in after completing a task. The format matches `scri
 ============================================================
 AGENT SELF-EVALUATION REPORT
 ============================================================
-Summary: Overall score X.X/5 across 5 quality axes.
+Summary: Overall score X.X/5 across 5 assessed quality axes.
 
   Accuracy         █████ 5/5    or    ███░░ 3/5
     + [Evidence: passing tests, verified claims]
@@ -46,8 +46,10 @@ TOP IMPROVEMENTS:
   2. [Second highest]
   (Only list axes scoring < 4, ranked by user impact)
 
-VERDICT: [Deliver as-is / Fix N issues then deliver / Redo from scratch]
+VERDICT: [Deliver as-is / Ask the user whether to redo or deliver / Redo from scratch]
 ```
+
+If any axis is unassessed, show `N/A` for that axis, report the number of assessed axes, and state that manual review is required before assigning an overall score or verdict.
 
 ## Quick Reference: Scoring Triggers
 
@@ -55,7 +57,7 @@ VERDICT: [Deliver as-is / Fix N issues then deliver / Redo from scratch]
 |---|---|---|---|---|---|
 | "should work" / "probably fine" | ≤4 | — | — | — | — |
 | "I think" / "I believe" | ≤4 | — | — | — | — |
-| No test output cited | ≤4 | — | — | — | — |
+| No verification signal cited | ≤3 | — | — | — | — |
 | "TODO" / "FIXME" left behind | ≤3 | ≤3 | — | ≤3 | — |
 | Missing error handling | — | ≤3 | — | — | — |
 | Only happy path covered | — | ≤3 | — | — | — |
@@ -82,5 +84,6 @@ Skip the evaluation if:
 |---|---|
 | ≥4.5 | Deliver as-is. No changes needed. |
 | 3.5–4.4 | Flag top improvement but deliver. Fix if <30 seconds. |
-| 2.5–3.4 | State what you'd change. Ask user: "Should I redo [axis] or deliver as-is?" |
-| <2.5 | Don't deliver. Say: "This scored [score] because [evidence]. Let me redo this with [specific fix]." Then redo. |
+| 2.5–3.4 | Ask user whether to redo the weakest axis or deliver as-is. |
+| <2.5 | Don't deliver. State the evidence and redo with specific fixes. |
+| Any axis unassessed | Manually review that axis before assigning an overall score or verdict. |
