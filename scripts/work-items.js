@@ -176,8 +176,36 @@ function slugifyWorkItemSegment(value) {
   );
 }
 
+function normalizeGithubRepo(repo) {
+  return typeof repo === 'string' ? repo.toLowerCase() : '';
+}
+
 function githubWorkItemId(repo, type, number) {
-  return `github-${slugifyWorkItemSegment(repo)}-${type}-${number}`;
+  return `github-${encodeURIComponent(normalizeGithubRepo(repo))}-${type}-${number}`;
+}
+
+function isSameGithubWorkItem(existing, incoming) {
+  return existing
+    && existing.source === incoming.source
+    && existing.sourceId === incoming.sourceId
+    && existing.metadata?.syncedBy === 'ecc-work-items-sync-github'
+    && normalizeGithubRepo(existing.metadata.repo) === normalizeGithubRepo(incoming.metadata.repo);
+}
+
+function resolveGithubWorkItemId(store, item) {
+  const existing = store.getWorkItemById(item.id);
+  if (existing) {
+    if (!isSameGithubWorkItem(existing, item)) {
+      throw new Error(`GitHub work item ID collision: ${item.id} belongs to a different item.`);
+    }
+    return item.id;
+  }
+
+  // Keep references to older imports intact, but never reuse a slug belonging
+  // to another repository. Prefer an existing canonical ID on every sync.
+  const type = item.source === 'github-pr' ? 'pr' : 'issue';
+  const legacyId = `github-${slugifyWorkItemSegment(item.metadata.repo)}-${type}-${item.sourceId}`;
+  return isSameGithubWorkItem(store.getWorkItemById(legacyId), item) ? legacyId : item.id;
 }
 
 function githubPrStatus(pr) {
@@ -245,7 +273,7 @@ function closeStaleGithubItems(store, repo, activeIds, options = {}) {
     if (!item.metadata || item.metadata.syncedBy !== 'ecc-work-items-sync-github') {
       continue;
     }
-    if (item.metadata.repo !== repo || activeIds.has(item.id)) {
+    if (normalizeGithubRepo(item.metadata.repo) !== normalizeGithubRepo(repo) || activeIds.has(item.id)) {
       continue;
     }
     if (item.status === 'closed' || item.status === 'done') {
@@ -281,10 +309,12 @@ function syncGithubWorkItems(store, options) {
   const items = [];
   for (const pr of prs) {
     const payload = buildGithubPrWorkItem(repo, pr, options);
-    activeIds.add(payload.id);
+    const id = resolveGithubWorkItemId(store, payload);
+    activeIds.add(id);
     items.push(
       store.upsertWorkItem({
         ...payload,
+        id,
         createdAt: undefined,
         updatedAt: syncedAt
       })
@@ -292,10 +322,12 @@ function syncGithubWorkItems(store, options) {
   }
   for (const issue of issues) {
     const payload = buildGithubIssueWorkItem(repo, issue, options);
-    activeIds.add(payload.id);
+    const id = resolveGithubWorkItemId(store, payload);
+    activeIds.add(id);
     items.push(
       store.upsertWorkItem({
         ...payload,
+        id,
         createdAt: undefined,
         updatedAt: syncedAt
       })
