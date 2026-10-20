@@ -2,6 +2,7 @@
 
 const { stripPluginNamespace } = require('./plugin-namespace');
 const { adaptAntigravityAgent } = require('./antigravity-agent');
+const { adaptAntigravityRule } = require('./antigravity-rule');
 const { adaptCopilotAgent } = require('./copilot-agent');
 const { disableOpenCodeHookPluginRegistration, getDisabledOpenCodePluginContent } = require('./hook-consent');
 
@@ -25,6 +26,9 @@ function transformInstallContent(operation, content) {
   }
   if (operation.contentTransform === 'antigravity-agent-frontmatter') {
     return adaptAntigravityAgent(content, operation.sourceRelativePath);
+  }
+  if (operation.contentTransform === 'antigravity-rule-frontmatter') {
+    return adaptAntigravityRule(content, operation.sourceRelativePath);
   }
   if (operation.contentTransform === 'copilot-agent-frontmatter') {
     return rewriteCopilotWorkflowPaths(adaptCopilotAgent(content, operation.sourceRelativePath), operation.sourceRelativePath);

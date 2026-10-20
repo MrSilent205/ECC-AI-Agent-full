@@ -451,6 +451,14 @@ function runTests() {
       assert.ok(plan.warnings.some(warning => warning.includes("Invalid language name 'bad/name'")));
       assert.ok(operationFor(plan, path.join('.agents', 'rules', 'common-coding-style.md')));
       assert.ok(operationFor(plan, path.join('.agents', 'rules', 'typescript-testing.md')));
+      assert.strictEqual(
+        operationFor(plan, path.join('.agents', 'rules', 'common-coding-style.md')).contentTransform,
+        'antigravity-rule-frontmatter'
+      );
+      assert.strictEqual(
+        operationFor(plan, path.join('.agents', 'rules', 'typescript-testing.md')).contentTransform,
+        'antigravity-rule-frontmatter'
+      );
       assert.ok(operationFor(plan, path.join('.agents', 'workflows', 'plan.md')));
       const agentOperation = plan.operations.find(operation => (
         operation.destinationPath.endsWith(path.join('.agents', 'agents', 'architect.md'))
