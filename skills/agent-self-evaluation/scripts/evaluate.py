@@ -36,7 +36,7 @@ TASK_OUTPUT_RATIO_MEDIUM = 8
 @dataclass
 class AxisScore:
     name: str
-    score: int
+    score: Optional[int]
     evidence: list[str] = field(default_factory=list)
     improvement: Optional[str] = None
 
@@ -59,8 +59,10 @@ def check_accuracy(text: str) -> AxisScore:
         (r"(?i)(verified|confirmed|validated)\s+(with|against|using|by)", "Explicit verification"),
         (r"(?i)(grep|rg)\s+.*\b(found|matched|returned)", "Grep confirmed"),
     ]
+    verified = False
     for pattern, label in verified_patterns:
         if re.search(pattern, text):
+            verified = True
             evidence.append(f"+ {label}")
 
     # Negative signals: unverified claims
@@ -82,8 +84,9 @@ def check_accuracy(text: str) -> AxisScore:
     elif deductions == 1:
         score = 4
 
-    if not evidence:
-        evidence.append("No verification signals detected — score assumes correctness")
+    if not verified:
+        score = min(score, 3)
+        evidence.append("- No verification signals detected — accuracy is unverified")
 
     result = AxisScore(name="Accuracy", score=score, evidence=evidence)
     if score < 5:
@@ -91,46 +94,18 @@ def check_accuracy(text: str) -> AxisScore:
     return result
 
 
-def check_completeness(text: str) -> AxisScore:
-    """Check for requirement coverage, edge cases, error handling."""
-    evidence = []
-    score = 5
-
-    # Positive signals
-    completeness_signals = [
-        (r"(?i)(edge\s*cases?|corner\s*cases?)", "Edge cases addressed"),
-        (r"(?i)(error\s*handling|exception\s*handling|try/except|try\s*{)", "Error handling present"),
-        (r"(?i)(all\s+\w+\s+(methods|endpoints|routes))", "Full coverage claimed"),
-        (r"(?i)(verification|verified\s+that|confirmed\s+that)", "Verification step present"),
-    ]
-    for pattern, label in completeness_signals:
-        if re.search(pattern, text):
-            evidence.append(f"+ {label}")
-
-    # Gaps
-    gap_signals = [
-        (r"(?i)(not\s+covered|not\s+handled|out\s+of\s+scope)", "Explicit gap acknowledged"),
-        (r"(?i)(only\s+(works|handles|supports)\s+\w+)", "Limited scope noted"),
-        (r"(?i)(assume[sd]?\s+that|assuming\s+the)", "Assumption without verification"),
-    ]
-    deductions = 0
-    for pattern, label in gap_signals:
-        if re.search(pattern, text):
-            deductions += 1
-            evidence.append(f"- {label}")
-
-    if deductions >= 2:
-        score = 3
-    elif deductions == 1:
-        score = 4
-
-    if not evidence:
-        evidence.append("No completeness signals — unable to assess coverage")
-
-    result = AxisScore(name="Completeness", score=score, evidence=evidence)
-    if score < 5:
-        result.improvement = "List what was covered AND what was intentionally excluded, with reasoning"
-    return result
+def check_completeness(task: Optional[str], _text: str) -> AxisScore:
+    """Leave coverage unassessed until requirements can be compared semantically."""
+    if task:
+        evidence = ["Not assessed: keyword heuristics cannot compare output with task requirements"]
+    else:
+        evidence = ["Not assessed: no task requirements were supplied"]
+    return AxisScore(
+        name="Completeness",
+        score=None,
+        evidence=evidence,
+        improvement="Manually compare the output against each task requirement before assigning a score",
+    )
 
 
 def _check_jargon(text: str) -> tuple[int, list[str]]:
@@ -294,7 +269,7 @@ def evaluate(task: Optional[str], output: str) -> list[AxisScore]:
     """Run all 5 axis checks and return scored results."""
     return [
         check_accuracy(output),
-        check_completeness(output),
+        check_completeness(task, output),
         check_clarity(output),
         check_actionability(output),
         check_conciseness(output, task),
@@ -303,27 +278,35 @@ def evaluate(task: Optional[str], output: str) -> list[AxisScore]:
 
 def format_report(scores: list[AxisScore]) -> str:
     """Format scores into a readable evaluation report."""
-    avg = sum(s.score for s in scores) / len(scores)
+    assessed_scores = [s.score for s in scores if s.score is not None]
+    all_assessed = len(assessed_scores) == len(scores)
+    avg = sum(assessed_scores) / len(assessed_scores) if all_assessed else None
+    unassessed_axes = [s.name for s in scores if s.score is None]
     lines = []
     lines.append("=" * 60)
     lines.append("AGENT SELF-EVALUATION REPORT")
     lines.append("=" * 60)
-    lines.append(f"Summary: Overall score {avg:.1f}/5 across 5 quality axes.")
+    if avg is not None:
+        lines.append(f"Summary: Overall score {avg:.1f}/5 across {len(scores)} assessed quality axes.")
+    else:
+        lines.append(f"Summary: Overall score unavailable; {len(assessed_scores)} of {len(scores)} axes assessed.")
     lines.append("")
 
     for s in scores:
-        bar = "█" * s.score + "░" * (5 - s.score)
-        lines.append(f"  {s.name:<15} {bar} {s.score}/5")
+        bar = "█" * s.score + "░" * (5 - s.score) if s.score is not None else "░" * 5
+        score_label = f"{s.score}/5" if s.score is not None else "N/A"
+        lines.append(f"  {s.name:<15} {bar} {score_label}")
         lines.extend(f"    {e}" for e in s.evidence)
         if s.improvement:
             lines.append(f"    → {s.improvement}")
         lines.append("")
 
-    lines.append(f"  {'OVERALL':<15} {avg:.1f}/5")
+    overall_label = f"{avg:.1f}/5" if avg is not None else f"N/A ({len(assessed_scores)}/{len(scores)} assessed)"
+    lines.append(f"  {'OVERALL':<15} {overall_label}")
     lines.append("")
 
     # Critical issues (axes ≤ 2)
-    critical = [(s, s.improvement or "No improvement suggested") for s in scores if s.score <= 2]
+    critical = [(s, s.improvement or "No improvement suggested") for s in scores if s.score is not None and s.score <= 2]
     lines.append("CRITICAL ISSUES (axes ≤ 2):")
     if critical:
         for s, imp in critical:
@@ -336,27 +319,31 @@ def format_report(scores: list[AxisScore]) -> str:
     lines.append("")
 
     # Top improvements (axes scoring < 4, ranked by impact)
-    improvements = [(s, s.improvement) for s in scores if s.improvement and s.score < 4]
+    improvements = [(s, s.improvement) for s in scores if s.improvement and s.score is not None and s.score < 4]
     lines.append("TOP IMPROVEMENTS:")
     if improvements:
-        for i, (s, imp) in enumerate(sorted(improvements, key=lambda x: x[0].score), 1):
+        for i, (s, imp) in enumerate(sorted(improvements, key=lambda x: x[0].score or 0), 1):
             lines.append(f"  {i}. [{s.name}] {imp}")
     else:
-        lines.append("  No axes below 4. Strong output across all dimensions.")
+        lines.append("  No assessed axes below 4. Strong output across assessed dimensions.")
 
     lines.append("")
 
     # Verdict
-    min_score = min(s.score for s in scores)
-    if min_score <= 2:
-        verdict = f"Redo with specific fixes. Weakest axis: {min(scores, key=lambda s: s.score).name} ({min_score}/5)."
-    elif any(s.score <= 3 for s in scores):
-        weak = [s.name for s in scores if s.score <= 3]
-        verdict = f"Fix {'/'.join(weak)} issues, then deliver."
+    if avg is None:
+        verdict = (
+            f"Manual review required for {', '.join(unassessed_axes)} before assigning an overall verdict."
+        )
     elif avg >= 4.5:
         verdict = "Deliver as-is. No changes needed."
-    else:
+    elif avg >= 3.5:
         verdict = "Deliver as-is. Minor improvements noted above."
+    elif avg >= 2.5:
+        weakest = min(scores, key=lambda score: score.score if score.score is not None else 6)
+        verdict = f"Ask the user whether to redo the weakest axis ({weakest.name}) or deliver as-is."
+    else:
+        weakest = min(scores, key=lambda score: score.score if score.score is not None else 6)
+        verdict = f"Redo with specific fixes. Weakest axis: {weakest.name} ({weakest.score}/5)."
     lines.append(f"VERDICT: {verdict}")
 
     return "\n".join(lines)

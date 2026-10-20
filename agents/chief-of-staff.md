@@ -109,7 +109,7 @@ For each action_required message:
 6. **Triage files** — Update LINE/Messenger draft status
 7. **Git commit & push** — Version-control all knowledge file changes
 
-This checklist is enforced by a `PostToolUse` hook that blocks completion until all steps are done. The hook intercepts `gmail send` / `conversations_add_message` and injects the checklist as a system reminder.
+This checklist is a reminder in Copilot. ECC does not configure `PostToolUse` hooks for Copilot, so it does not block completion after `gmail send` or `conversations_add_message`.
 
 ## Briefing Output Format
 

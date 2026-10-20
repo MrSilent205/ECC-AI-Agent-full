@@ -42,7 +42,7 @@ For a JSX/TSX PR, invoke both agents. For a pure `.ts` change with no React impo
 2. Before reviewing a PR, inspect merge readiness if metadata is available (`gh pr view --json mergeStateStatus,statusCheckRollup`). If checks are red or there are merge conflicts, stop and report.
 3. Run the project's lint command if present (`npm/pnpm/yarn/bun run lint`) — confirm `eslint-plugin-react-hooks` is configured. If the project lacks `react-hooks/rules-of-hooks` or `react-hooks/exhaustive-deps`, flag this as a HIGH config issue.
 4. Run the project's typecheck command if present (`npm/pnpm/yarn/bun run typecheck` or `tsc --noEmit -p <tsconfig>`). Skip cleanly for JS-only projects.
-5. If no JSX/TSX changes are present in the diff, defer to `typescript-reviewer` and stop.
+5. If the diff contains no React-related changes, including React hooks or lifecycle logic in `.ts` files, defer to `typescript-reviewer` and stop. Do not use the absence of JSX/TSX changes alone as the stopping condition.
 6. Focus on modified `.tsx`/`.jsx` files; read surrounding context before commenting.
 7. Begin review.
 

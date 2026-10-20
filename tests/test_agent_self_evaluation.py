@@ -29,6 +29,39 @@ def test_output_file_uses_piped_task(evaluator: ModuleType, tmp_path: Path, monk
     assert evaluator._read_input(args(output=str(output))) == ("Add retry logic", "All tests passed.")
 
 
+def test_accuracy_without_verification_signal_is_capped(evaluator: ModuleType) -> None:
+    score = evaluator.check_accuracy("The implementation is correct.")
+
+    assert score.score <= 3
+    assert any("unverified" in item.lower() for item in score.evidence)
+
+
+def test_completeness_is_unassessed_without_requirement_comparison(evaluator: ModuleType) -> None:
+    scores = evaluator.evaluate("Add retries and logging.", "Added retries.")
+    completeness = next(score for score in scores if score.name == "Completeness")
+
+    assert completeness.score is None
+    report = evaluator.format_report(scores)
+    assert "Overall score unavailable" in report
+    assert "Manual review required for Completeness" in report
+
+
+@pytest.mark.parametrize(
+    ("values", "expected_verdict"),
+    [
+        ([3, 5, 5, 5, 5], "Deliver as-is. No changes needed."),
+        ([3, 3, 3, 3, 3], "Ask the user whether to redo the weakest axis"),
+    ],
+)
+def test_verdict_matches_published_average_ranges(
+    evaluator: ModuleType, values: list[int], expected_verdict: str
+) -> None:
+    names = ["Accuracy", "Completeness", "Clarity", "Actionability", "Conciseness"]
+    scores = [evaluator.AxisScore(name=name, score=value) for name, value in zip(names, values)]
+
+    assert expected_verdict in evaluator.format_report(scores)
+
+
 def test_explicit_task_takes_precedence_over_pipe(evaluator: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     output = tmp_path / "response.txt"
     output.write_text("Answer", encoding="utf-8")

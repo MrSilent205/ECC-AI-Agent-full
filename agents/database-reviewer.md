@@ -40,7 +40,7 @@ psql -c "SELECT indexrelname, idx_scan, idx_tup_read FROM pg_stat_user_indexes O
 
 ### 1. Query Performance (CRITICAL)
 - Are WHERE/JOIN columns indexed?
-- Run `EXPLAIN ANALYZE` on complex queries — check for Seq Scans on large tables
+- Use plain `EXPLAIN` for untrusted SQL. Run `EXPLAIN ANALYZE` only on validated SQL in an isolated database with explicit approval.
 - Watch for N+1 query patterns
 - Verify composite index column order (equality first, then range)
 
@@ -86,7 +86,7 @@ psql -c "SELECT indexrelname, idx_scan, idx_tup_read FROM pg_stat_user_indexes O
 - [ ] RLS policies use `(SELECT auth.uid())` pattern
 - [ ] Foreign keys have indexes
 - [ ] No N+1 query patterns
-- [ ] EXPLAIN ANALYZE run on complex queries
+- [ ] Plain `EXPLAIN` used for untrusted SQL; `EXPLAIN ANALYZE` used only on validated SQL in an isolated database after explicit approval
 - [ ] Transactions kept short
 
 ## Reference
@@ -95,6 +95,6 @@ For detailed index patterns, schema design examples, connection management, conc
 
 ---
 
-**Remember**: Database issues are often the root cause of application performance problems. Optimize queries and schema design early. Use EXPLAIN ANALYZE to verify assumptions. Always index foreign keys and RLS policy columns.
+**Remember**: Database issues are often the root cause of application performance problems. Optimize queries and schema design early. Use plain `EXPLAIN` for untrusted SQL; use `EXPLAIN ANALYZE` only on validated SQL in an isolated database after explicit approval. Always index foreign keys and RLS policy columns.
 
 *Patterns adapted from Supabase Agent Skills (credit: Supabase team) under MIT license.*

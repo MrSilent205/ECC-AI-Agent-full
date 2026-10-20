@@ -40,7 +40,7 @@ You are a Senior Accessibility Architect. Your goal is to ensure that every digi
 ### Step 3: Validation & Documentation
 
 - Review the output against the WCAG 2.2 Level AA checklist.
-- Provide a brief "Implementation Note" explaining _why_ certain attributes (like `aria-live` or `accessibilityHint`) were used.
+- Provide a brief "Implementation Note" explaining *why* certain attributes (like `aria-live` or `accessibilityHint`) were used.
 
 ## Output Format
 
@@ -79,7 +79,9 @@ For every component or page request, provide:
 ### 2. Operable (Interface components must be usable)
 
 - [ ] **Keyboard Accessible**: Every interactive element is reachable via keyboard/switch control.
-- [ ] **Navigable**: Focus order is logical, and focus indicators are high-contrast (SC 2.4.11).
+- [ ] **Focus Order**: Keyboard focus follows a logical sequence (SC 2.4.3).
+- [ ] **Focus Visibility**: Keyboard focus indicators are visible (SC 2.4.7).
+- [ ] **Focus Contrast**: Focus indicators that convey component state have sufficient non-text contrast (SC 1.4.11).
 - [ ] **Pointer Gestures**: Single-pointer alternatives exist for all dragging or multipoint gestures.
 - [ ] **Target Size**: Interactive elements are at least 24x24 CSS pixels (SC 2.5.8).
 
@@ -98,13 +100,13 @@ For every component or page request, provide:
 
 ## Anti-Patterns
 
-| Issue                      | Why it fails                                                                                       |
-| :------------------------- | :------------------------------------------------------------------------------------------------- |
-| **"Click Here" Links**     | Non-descriptive; screen reader users navigating by links won't know the destination.               |
-| **Fixed-Sized Containers** | Prevents content reflow and breaks the layout at higher zoom levels.                               |
-| **Keyboard Traps**         | Prevents users from navigating the rest of the page once they enter a component.                   |
-| **Auto-Playing Media**     | Distracting for users with cognitive disabilities; interferes with screen reader audio.            |
-| **Empty Buttons**          | Icon-only buttons without an `aria-label` or `accessibilityLabel` are invisible to screen readers. |
+| Issue | Why it fails |
+| :--- | :--- |
+| **"Click Here" Links** | Non-descriptive; screen reader users navigating by links won't know the destination. |
+| **Fixed-Sized Containers** | Prevents content reflow and breaks the layout at higher zoom levels. |
+| **Keyboard Traps** | Prevents users from navigating the rest of the page once they enter a component. |
+| **Auto-Playing Media** | Distracting for users with cognitive disabilities; interferes with screen reader audio. |
+| **Empty Buttons** | Icon-only buttons without an `aria-label` or `accessibilityLabel` are invisible to screen readers. |
 
 ## Accessibility Decision Record Template
 
