@@ -1,5 +1,7 @@
 'use strict';
 
+const path = require('path');
+
 const { stripPluginNamespace } = require('./plugin-namespace');
 const { adaptAntigravityAgent } = require('./antigravity-agent');
 const { adaptCopilotAgent } = require('./copilot-agent');
@@ -9,8 +11,32 @@ function rewriteCopilotWorkflowPaths(content, sourceRelativePath) {
   if (!/\.md$/i.test(sourceRelativePath)) return content;
   // Commands run from the installed project root. Rewrite only the supported
   // helper entrypoint, leaving unrelated project scripts and URLs untouched.
-  return content.replace(/(^|[\s`"'(])scripts\/setup-package-manager\.js\b/g,
-    '$1.github/ecc/scripts/setup-package-manager.js');
+  return content
+    .replace(/(^|[\s`"'(])\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/setup-package-manager\.js\b/g,
+      '$1.github/ecc/scripts/setup-package-manager.js')
+    .replace(/(^|[\s`"'(])\$ecc_tdd_plugin_root\/scripts\/setup-package-manager\.js\b/g,
+      '$1.github/ecc/scripts/setup-package-manager.js')
+    .replace(/(^|[\s`"'(])scripts\/setup-package-manager\.js\b/g,
+      '$1.github/ecc/scripts/setup-package-manager.js');
+}
+
+function rewriteStandaloneTddDetector(operation, content) {
+  if (String(operation.sourceRelativePath || '').replace(/\\/g, '/') !== 'skills/tdd-workflow/SKILL.md') return content;
+  const command = /node (?:"(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$ecc_tdd_plugin_root)\/scripts\/setup-package-manager\.js"|scripts\/setup-package-manager\.js) --detect/g;
+  if (!command.test(content)) return content;
+  const destination = operation.destinationPath;
+  if (typeof destination !== 'string' || !path.isAbsolute(destination)
+    || path.basename(destination) !== 'SKILL.md'
+    || path.basename(path.dirname(destination)) !== 'tdd-workflow'
+    || path.basename(path.dirname(path.dirname(destination))) !== 'skills') {
+    throw new Error('Invalid standalone TDD skill destination');
+  }
+  const root = path.dirname(path.dirname(path.dirname(destination)));
+  const helper = path.join(root, 'scripts', 'setup-package-manager.js').split(path.sep).join('/');
+  // This is a Bash command in Markdown. Single-quote the complete argument so
+  // spaces, quotes and shell metacharacters in the install root stay literal.
+  const quoted = "'" + helper.replace(/'/g, "'\\''") + "'";
+  return content.replace(command, () => `node ${quoted} --detect`);
 }
 
 function transformInstallContent(operation, content) {
@@ -18,7 +44,7 @@ function transformInstallContent(operation, content) {
     return content;
   }
   if (operation.contentTransform === 'claude-manual-plugin-namespace') {
-    return stripPluginNamespace(content);
+    return rewriteStandaloneTddDetector(operation, stripPluginNamespace(content));
   }
   if (operation.contentTransform === 'qwen-agent-frontmatter') {
     return require('../../qwen-adapt-agents').adaptFrontmatter(content).text;

@@ -32,9 +32,24 @@ function runAsync(root, args) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [LEDGER, ...args, '--root', root]);
     let out = '';
+    let err = '';
+    let spawnError = null;
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
     child.stdout.on('data', (d) => { out += d; });
-    child.on('close', (code) => resolve({ code, out }));
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', (error) => { spawnError = `${error.code}: ${error.message}`; });
+    child.on('close', (code, signal) => resolve({ code, signal, out, err, spawnError, root, args }));
   });
+}
+
+function allocationResult(result, index) {
+  const detail = `allocation worker ${index} in ${result.root}: ${JSON.stringify(result.args)}; exit ${result.code}; signal ${result.signal || 'none'}; spawn ${result.spawnError || 'none'}; stderr ${result.err || '(empty)'}`;
+  assert.strictEqual(result.code, 0, detail);
+  assert.ok(!result.signal && !result.spawnError, detail);
+  try { return JSON.parse(result.out); } catch (error) {
+    throw new Error(`${detail}; invalid JSON stdout ${JSON.stringify(result.out)}: ${error.message}`);
+  }
 }
 
 function writeJson(root, name, value) {
@@ -309,9 +324,17 @@ const tests = [
     run(wt, ['apply', '--input', writeJson(wt, 'epic.json', { create: { 'epics/auth-flow.md': EPIC } })]);
     // Each worktree has its own lock, so only the shared exclusive-create markers prevent duplicates.
     const results = await Promise.all(Array.from({ length: 32 }, (_, i) => runAsync(i % 2 ? wt : root, ['allocate', '--epic', 'auth-flow', '--count', '5'])));
-    const ids = results.flatMap((r) => JSON.parse(r.out).ids);
+    const ids = results.flatMap((r, i) => allocationResult(r, i).ids);
     assert.strictEqual(ids.length, 160);
     assert.strictEqual(new Set(ids).size, 160, 'duplicate story IDs allocated across worktrees');
+  }],
+
+  ['failed allocation reports the actual child diagnostic before parsing stdout', async () => {
+    const root = newRepo();
+    const result = await runAsync(root, ['allocate', '--epic', 'bad!', '--count', '5']);
+    assert.strictEqual(result.code, 2);
+    assert.strictEqual(result.out, '');
+    assert.throws(() => allocationResult(result, 0), /allocation worker 0.*exit 2.*invalid epic slug: bad!/s);
   }],
 
   ['symlinked ledger directories are refused before any write', () => {

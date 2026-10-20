@@ -91,9 +91,15 @@ Do not assume `npm test`. The commands in the steps and examples below use `<tes
 
 1. **Run the package-manager detector** (ships with ECC):
 
-   ```bash
-   node scripts/setup-package-manager.js --detect
-   ```
+```bash
+IFS= read -r ecc_tdd_plugin_root <<'ECC_TDD_PLUGIN_ROOT_LITERAL'
+${CLAUDE_PLUGIN_ROOT}
+ECC_TDD_PLUGIN_ROOT_LITERAL
+if [ "$ecc_tdd_plugin_root" = '$''{CLAUDE_PLUGIN_ROOT}' ]; then
+  ecc_tdd_plugin_root=${CLAUDE_PLUGIN_ROOT:-.}
+fi
+node "$ecc_tdd_plugin_root/scripts/setup-package-manager.js" --detect
+```
 
    It resolves the package manager (npm / pnpm / yarn / bun) from, in order: `CLAUDE_PACKAGE_MANAGER`, `.claude/package-manager.json`, the `package.json` `packageManager` field, the lockfile, then global config.
 

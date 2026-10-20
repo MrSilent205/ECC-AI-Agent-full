@@ -68,13 +68,13 @@ function metadataFailure(meta, entries = []) {
   return null;
 }
 
-function releaseOwnedLock(lockPath, fd, identity) {
+function releaseOwnedLock(lockPath, fd, identity, ownerToken) {
   let inspectionDenied;
   try {
-    // Keep the original descriptor open while checking ownership so its inode
-    // cannot be reused. Preserve a replacement detected before release; this
-    // check is not atomic against noncooperating filesystem mutation.
-    if (identity) {
+    // Keep the original descriptor open through the ownership checks. The
+    // token also distinguishes files when filesystem identities are ambiguous.
+    // This is not atomic against noncooperating filesystem mutation.
+    if (identity && ownerToken) {
       let current;
       try { current = fs.lstatSync(lockPath); } catch (error) {
         if (error.code === 'ENOENT') throw new CapsuleError('capsule.lock_lost', 'append lock disappeared before release');
@@ -82,7 +82,8 @@ function releaseOwnedLock(lockPath, fd, identity) {
         inspectionDenied = error;
       }
       if (!inspectionDenied) {
-        if (!current.isFile() || current.dev !== identity.dev || current.ino !== identity.ino) {
+        if (!current.isFile() || current.dev !== identity.dev || current.ino !== identity.ino
+          || fs.readFileSync(lockPath, 'utf8') !== ownerToken) {
           throw new CapsuleError('capsule.lock_lost', 'append lock ownership changed before release');
         }
         fs.unlinkSync(lockPath);
@@ -102,6 +103,15 @@ function releaseOwnedLock(lockPath, fd, identity) {
   }
 }
 
+function writeAll(fd, bytes, target) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = fs.writeSync(fd, bytes, offset, bytes.length - offset, null);
+    if (written <= 0) throw new CapsuleError('capsule.write_failed', `${target} write made no progress`);
+    offset += written;
+  }
+}
+
 /** Exclusive cooperative append lock. Never waits or infers stale ownership. */
 function withAppendLock(dir, operation) {
   const lockPath = path.join(dir, APPEND_LOCK_FILE);
@@ -113,11 +123,17 @@ function withAppendLock(dir, operation) {
     throw error;
   }
   let identity;
+  let ownerToken;
   try {
     identity = fs.fstatSync(fd);
+    const token = crypto.randomBytes(16).toString('hex');
+    writeAll(fd, Buffer.from(token, 'utf8'), 'append lock');
+    ownerToken = token;
     return operation();
   } finally {
-    releaseOwnedLock(lockPath, fd, identity);
+    // Failed initialization keeps its partial barrier for diagnosis, without
+    // deleting a pathname whose ownership cannot be established.
+    releaseOwnedLock(lockPath, fd, identity, ownerToken);
   }
 }
 
@@ -213,12 +229,7 @@ class Capsule {
       const bytes = Buffer.from(canonicalJson(entry) + '\n', 'utf8');
       const fd = fs.openSync(this.journalPath, 'a');
       try {
-        let offset = 0;
-        while (offset < bytes.length) {
-          const written = fs.writeSync(fd, bytes, offset, bytes.length - offset, null);
-          if (written <= 0) throw new CapsuleError('capsule.write_failed', 'journal write made no progress');
-          offset += written;
-        }
+        writeAll(fd, bytes, 'journal');
         fs.fsyncSync(fd);
       } finally {
         fs.closeSync(fd);

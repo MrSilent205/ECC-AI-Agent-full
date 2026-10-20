@@ -44,3 +44,51 @@ test('Pi generation stays byte-identical after local Python execution creates ca
   assert.deepEqual(fs.readFileSync(path.join(profile, 'scripts/main.py')), original);
   assert.deepEqual(fs.readdirSync(path.join(profile, 'scripts')), ['main.py']);
 });
+
+test('Pi generation keeps TDD detector portable without changing canonical plugin content', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc pi tdd '));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const write = (relative, content) => {
+    const destination = path.join(root, relative);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, content);
+  };
+  write('scripts/build-pi-core.js', fs.readFileSync(path.join(__dirname, '../../scripts/build-pi-core.js')));
+  write('VERSION', '2.2.3\n');
+  write('LICENSE', 'Fixture license\n');
+  fs.mkdirSync(path.join(root, 'commands'));
+  write('manifests/pi-core.json', JSON.stringify({
+    profile: { dir: 'pi/core', packageName: 'ecc-pi-core', license: 'MIT', keywords: ['pi-package'] },
+    curationRules: { include: ['local'], exclude: [] },
+    skills: { include: ['tdd-workflow', 'demo'], exclude: {} },
+    commands: { include: [], exclude: {} },
+    safety: {},
+  }));
+  const quoted = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/setup-package-manager.js" --detect';
+  const relative = 'node scripts/setup-package-manager.js --detect';
+  const unrelated = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/other.js" --detect';
+  const demo = `---\nname: demo\ndescription: Review local code.\n---\n${quoted}\n`;
+  write('skills/demo/SKILL.md', demo);
+  const run = (...args) => spawnSync(process.execPath, [path.join(root, 'scripts/build-pi-core.js'), ...args], {
+    cwd: root, encoding: 'utf8', timeout: 10000,
+  });
+  const conditional = [
+    'if [ -n "${CLAUDE_PLUGIN_ROOT}" ]; then',
+    `  ${quoted}`, 'else', `  ${relative}`, 'fi',
+  ].join('\n');
+  const captured = fs.readFileSync(path.join(__dirname, '../../skills/tdd-workflow/SKILL.md'), 'utf8')
+    .split('### Step 0: Detect the Test Runner')[1].match(/```bash\n([\s\S]*?)```/)[1]
+    .replace(/^ {3}/gm, '').trim();
+  for (const command of [quoted, relative, conditional, captured]) {
+    const canonical = `---\nname: tdd-workflow\ndescription: Test local code.\n---\n${command}\n${unrelated}\n`;
+    write('skills/tdd-workflow/SKILL.md', canonical);
+    const built = run();
+    assert.equal(built.status, 0, built.stderr);
+    const installed = fs.readFileSync(path.join(root, 'pi/core/skills/tdd-workflow/SKILL.md'), 'utf8');
+    assert.equal(installed, canonical.replace(captured, relative).replace(conditional, relative).replace(quoted, relative));
+    assert.equal(fs.readFileSync(path.join(root, 'skills/tdd-workflow/SKILL.md'), 'utf8'), canonical);
+    assert.equal(fs.readFileSync(path.join(root, 'pi/core/skills/demo/SKILL.md'), 'utf8'), demo);
+    const check = run('--check');
+    assert.equal(check.status, 0, check.stderr);
+  }
+});

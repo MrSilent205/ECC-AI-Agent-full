@@ -1104,7 +1104,8 @@ function runTests() {
         fs.readFileSync(
           path.join(REPO_ROOT, 'skills', 'tdd-workflow', 'SKILL.md'),
           'utf8'
-        )
+        ).replace('node "$ecc_tdd_plugin_root/scripts/setup-package-manager.js" --detect',
+          `node '${path.join(targetRoot, 'scripts', 'setup-package-manager.js').split(path.sep).join('/')}' --detect`)
       );
       assert.ok(!fs.existsSync(legacySkillPath));
       assert.strictEqual(fs.readFileSync(recordedStatePath, 'utf8'), 'outside sentinel\n');

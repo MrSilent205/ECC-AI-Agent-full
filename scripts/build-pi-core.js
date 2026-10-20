@@ -146,6 +146,20 @@ for (const dirName of manifest.skills.include) {
         .replace(/^name:\s*["']?[^\n"']+["']?\s*$/m, `name: ${outName}`);
       fs.mkdirSync(path.dirname(path.join(destDir, f.rel)), { recursive: true });
       fs.writeFileSync(path.join(destDir, f.rel), content);
+    } else if (dirName === 'tdd-workflow' && f.rel === 'SKILL.md') {
+      // Pi does not substitute Claude plugin variables. Keep its existing
+      // detector command while canonical Claude content uses the plugin root.
+      content = fs.readFileSync(f.full, 'utf8').replace(
+        /^([ \t]*)IFS= read -r ecc_tdd_plugin_root <<'ECC_TDD_PLUGIN_ROOT_LITERAL'\r?\n[ \t]*\$\{CLAUDE_PLUGIN_ROOT\}\r?\n[ \t]*ECC_TDD_PLUGIN_ROOT_LITERAL\r?\n[ \t]*if \[ (?:(?:! -f "\$ecc_tdd_plugin_root\/scripts\/setup-package-manager\.js")|(?:"\$ecc_tdd_plugin_root" = '\$''\{CLAUDE_PLUGIN_ROOT\}')) \]; then\r?\n[ \t]*ecc_tdd_plugin_root=\$\{CLAUDE_PLUGIN_ROOT:-\.\}\r?\n[ \t]*fi\r?\n[ \t]*node "\$ecc_tdd_plugin_root\/scripts\/setup-package-manager\.js" --detect$/m,
+        '$1node scripts/setup-package-manager.js --detect').replace(
+        /^```bash\r?\nnode scripts\/setup-package-manager\.js --detect\r?\n```$/m,
+        '   ```bash\n   node scripts/setup-package-manager.js --detect\n   ```').replace(
+        /^([ \t]*)if \[ -n "\$\{CLAUDE_PLUGIN_ROOT\}" \]; then\r?\n[ \t]*node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/setup-package-manager\.js" --detect\r?\n[ \t]*else\r?\n[ \t]*node scripts\/setup-package-manager\.js --detect\r?\n[ \t]*fi$/m,
+        '$1node scripts/setup-package-manager.js --detect').replace(
+        'node "${CLAUDE_PLUGIN_ROOT}/scripts/setup-package-manager.js" --detect',
+        'node scripts/setup-package-manager.js --detect');
+      fs.mkdirSync(path.dirname(path.join(destDir, f.rel)), { recursive: true });
+      fs.writeFileSync(path.join(destDir, f.rel), content);
     } else {
       copyFile(f.full, path.join(destDir, f.rel));
     }

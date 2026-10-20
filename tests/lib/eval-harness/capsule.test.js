@@ -304,11 +304,14 @@ test('validation or clock exceptions release ownership so a later append can pro
 test('short writes complete the entire UTF-8 journal entry before acknowledgement', () => {
   const dir = tempDir('short-write');
   const originalWrite = fs.writeSync;
+  let journalFd;
   let chunks = 0;
   try {
     const c = capsule.Capsule.create(dir);
     fs.writeSync = (fd, data, offset, length, position) => {
-      if (!Buffer.isBuffer(data)) return originalWrite(fd, data, offset, length);
+      // The initialized token is hex; the journal is a canonical JSON object.
+      if (journalFd === undefined && Buffer.isBuffer(data) && data[0] === 0x7b) journalFd = fd;
+      if (fd !== journalFd) return originalWrite(fd, data, offset, length, position);
       chunks += 1;
       return originalWrite(fd, data, offset, Math.min(length, 7), position);
     };
@@ -323,11 +326,14 @@ test('short writes complete the entire UTF-8 journal entry before acknowledgemen
 test('partial write failure leaves evidence and prevents later append from hiding the tail', () => {
   const dir = tempDir('partial-write');
   const originalWrite = fs.writeSync;
+  let journalFd;
   let chunks = 0;
   try {
     const c = capsule.Capsule.create(dir);
     fs.writeSync = (fd, data, offset, length, position) => {
-      if (!Buffer.isBuffer(data)) return originalWrite(fd, data, offset, length);
+      // The initialized token is hex; the journal is a canonical JSON object.
+      if (journalFd === undefined && Buffer.isBuffer(data) && data[0] === 0x7b) journalFd = fd;
+      if (fd !== journalFd) return originalWrite(fd, data, offset, length, position);
       if (chunks++ > 0) throw new Error('write fixture');
       return originalWrite(fd, data, offset, Math.min(length, 9), position);
     };
@@ -347,9 +353,13 @@ test('partial write failure leaves evidence and prevents later append from hidin
 test('a zero-progress write fails and releases the lock without pretending success', () => {
   const dir = tempDir('zero-write');
   const originalWrite = fs.writeSync;
+  let journalFd;
   try {
     const c = capsule.Capsule.create(dir);
-    fs.writeSync = () => 0;
+    fs.writeSync = (fd, data, offset, length, position) => {
+      if (journalFd === undefined && Buffer.isBuffer(data) && data[0] === 0x7b) journalFd = fd;
+      return fd === journalFd ? 0 : originalWrite(fd, data, offset, length, position);
+    };
     assert.throws(() => c.append('plan', 'zero', {}), error => error.code === 'capsule.write_failed');
     fs.writeSync = originalWrite;
     assert.strictEqual(capsule.verify(dir).entry_count, 0);
@@ -391,6 +401,45 @@ test('release preserves a detected replacement lock instead of deleting another 
   } finally { cleanup(dir); }
 });
 
+test('release preserves a replacement lock even when inode identity is indistinguishable', () => {
+  const dir = tempDir('equal-lock-identity');
+  const lock = appendLock(dir);
+  const original = { open: fs.openSync, stat: fs.lstatSync, fstat: fs.fstatSync };
+  let ownedFd;
+  const ambiguous = stat => ({ ...stat, dev: 0, ino: 0, isFile: () => stat.isFile() });
+  try {
+    capsule.Capsule.create(dir);
+    fs.openSync = (file, flags, ...args) => {
+      const fd = original.open(file, flags, ...args);
+      if (file === lock && flags === 'wx') ownedFd = fd;
+      return fd;
+    };
+    fs.fstatSync = (fd, ...args) => {
+      const stat = original.fstat(fd, ...args);
+      return fd === ownedFd ? ambiguous(stat) : stat;
+    };
+    fs.lstatSync = (file, ...args) => {
+      const stat = original.stat(file, ...args);
+      return file === lock ? ambiguous(stat) : stat;
+    };
+    const c = capsule.Capsule.open(dir, { clock: () => {
+      fs.renameSync(lock, path.join(dir, 'displaced-lock'));
+      fs.writeFileSync(lock, 'replacement owner');
+      return fixedClock();
+    } });
+    assert.throws(() => c.append('plan', 'owner', {}), error => error.code === 'capsule.lock_lost');
+    assert.strictEqual(fs.readFileSync(lock, 'utf8'), 'replacement owner');
+    assert.strictEqual(capsule.verify(dir).entry_count, 1);
+    assert.ok(capsule.verify(dir).ok);
+    assert.throws(() => capsule.Capsule.open(dir).append('plan', 'blocked', {}), error => error.code === 'capsule.busy');
+  } finally {
+    fs.openSync = original.open;
+    fs.lstatSync = original.stat;
+    fs.fstatSync = original.fstat;
+    cleanup(dir);
+  }
+});
+
 test('a lock removed externally is reported as lost after closing owned descriptors', () => {
   const dir = tempDir('missing-lock');
   try {
@@ -418,10 +467,11 @@ for (const scenario of [
   test(`lock release: ${scenario.name}`, () => {
     const dir = tempDir('lock-close-boundary');
     const lock = appendLock(dir);
-    const original = { open: fs.openSync, close: fs.closeSync, stat: fs.lstatSync, unlink: fs.unlinkSync };
+    const original = { open: fs.openSync, close: fs.closeSync, stat: fs.lstatSync, unlink: fs.unlinkSync, write: fs.writeSync };
     const permissionError = Object.assign(new Error('synthetic lock inspection denied'), { code: scenario.code || 'EPERM' });
     const closeError = Object.assign(new Error('synthetic ambiguous close failure'), { code: 'EIO' });
     let ownedFd;
+    let ownedToken = '';
     let closed = false;
     let closes = 0;
     let inspections = 0;
@@ -432,6 +482,11 @@ for (const scenario of [
         const fd = original.open.call(this, file, ...args);
         if (file === lock && args[0] === 'wx') ownedFd = fd;
         return fd;
+      };
+      fs.writeSync = function(fd, data, offset, length, position) {
+        const result = original.write.call(this, fd, data, offset, length, position);
+        if (fd === ownedFd) ownedToken += data.subarray(offset, offset + result).toString('utf8');
+        return result;
       };
       fs.lstatSync = function(file, ...args) {
         if (file === lock) {
@@ -471,8 +526,9 @@ for (const scenario of [
       fs.closeSync = original.close;
       fs.lstatSync = original.stat;
       fs.unlinkSync = original.unlink;
+      fs.writeSync = original.write;
       if (scenario.outcome === 'missing') assert.strictEqual(fs.existsSync(lock), false);
-      else assert.strictEqual(fs.readFileSync(lock, 'utf8'), scenario.outcome === 'replacement' ? 'replacement owner' : '');
+      else assert.strictEqual(fs.readFileSync(lock, 'utf8'), scenario.outcome === 'replacement' ? 'replacement owner' : ownedToken);
       // Release failure can follow a complete durable append; never infer rollback.
       assert.strictEqual(capsule.verify(dir).entry_count, 1);
       assert.strictEqual(capsule.verify(dir).ok, true);
@@ -481,10 +537,131 @@ for (const scenario of [
       fs.closeSync = original.close;
       fs.lstatSync = original.stat;
       fs.unlinkSync = original.unlink;
+      fs.writeSync = original.write;
       cleanup(dir);
     }
   });
 }
+
+test('failed ownership-token initialization preserves the primary error and partial barrier', () => {
+  const dir = tempDir('lock-token-init');
+  const lock = appendLock(dir);
+  const original = { open: fs.openSync, write: fs.writeSync, close: fs.closeSync };
+  const failure = Object.assign(new Error('synthetic token initialization failure'), { code: 'EIO' });
+  let ownedFd;
+  let closed = false;
+  try {
+    const c = capsule.Capsule.create(dir);
+    fs.openSync = (file, flags, ...args) => {
+      const fd = original.open(file, flags, ...args);
+      if (file === lock && flags === 'wx') ownedFd = fd;
+      return fd;
+    };
+    fs.writeSync = (fd, ...args) => {
+      if (fd === ownedFd) throw failure;
+      return original.write(fd, ...args);
+    };
+    fs.closeSync = fd => {
+      const result = original.close(fd);
+      if (fd === ownedFd) closed = true;
+      return result;
+    };
+    assert.throws(() => c.append('plan', 'owner', {}), error => error === failure);
+    assert.strictEqual(closed, true);
+    assert.strictEqual(fs.readFileSync(lock, 'utf8'), '');
+    assert.strictEqual(capsule.verify(dir).entry_count, 0);
+    assert.throws(() => capsule.Capsule.open(dir).append('plan', 'blocked', {}), error => error.code === 'capsule.busy');
+  } finally {
+    fs.openSync = original.open;
+    fs.writeSync = original.write;
+    fs.closeSync = original.close;
+    cleanup(dir);
+  }
+});
+
+test('partial ownership-token failure preserves exact bytes and the primary error', () => {
+  const dir = tempDir('partial-token');
+  const lock = appendLock(dir);
+  const original = { open: fs.openSync, write: fs.writeSync, close: fs.closeSync };
+  const failure = Object.assign(new Error('partial token write fixture'), { code: 'EIO' });
+  let ownedFd;
+  let prefix;
+  let closes = 0;
+  try {
+    const c = capsule.Capsule.create(dir);
+    fs.openSync = (file, flags, ...args) => {
+      const fd = original.open(file, flags, ...args);
+      if (file === lock && flags === 'wx') ownedFd = fd;
+      return fd;
+    };
+    fs.writeSync = (fd, data, offset, length, position) => {
+      if (fd !== ownedFd) return original.write(fd, data, offset, length, position);
+      if (prefix) throw failure;
+      const written = original.write(fd, data, offset, Math.min(length, 7), position);
+      prefix = data.subarray(offset, offset + written).toString('utf8');
+      return written;
+    };
+    fs.closeSync = fd => { if (fd === ownedFd) closes += 1; return original.close(fd); };
+    assert.throws(() => c.append('plan', 'owner', {}), error => error === failure);
+    assert.strictEqual(closes, 1);
+    assert.match(prefix, /^[0-9a-f]{7}$/);
+    assert.strictEqual(fs.readFileSync(lock, 'utf8'), prefix);
+    assert.strictEqual(capsule.verify(dir).entry_count, 0);
+    assert.throws(() => capsule.Capsule.open(dir).append('plan', 'blocked', {}), error => error.code === 'capsule.busy');
+    assert.strictEqual(fs.readFileSync(lock, 'utf8'), prefix);
+  } finally {
+    fs.openSync = original.open; fs.writeSync = original.write; fs.closeSync = original.close; cleanup(dir);
+  }
+});
+
+test('zero-progress ownership-token write refuses before journal mutation and retains its barrier', () => {
+  const dir = tempDir('zero-token');
+  const lock = appendLock(dir);
+  const original = { open: fs.openSync, write: fs.writeSync, close: fs.closeSync };
+  let ownedFd;
+  let closes = 0;
+  try {
+    const c = capsule.Capsule.create(dir);
+    fs.openSync = (file, flags, ...args) => {
+      const fd = original.open(file, flags, ...args);
+      if (file === lock && flags === 'wx') ownedFd = fd;
+      return fd;
+    };
+    fs.writeSync = (fd, ...args) => fd === ownedFd ? 0 : original.write(fd, ...args);
+    fs.closeSync = fd => { if (fd === ownedFd) closes += 1; return original.close(fd); };
+    assert.throws(() => c.append('plan', 'owner', {}), error => error.code === 'capsule.write_failed');
+    assert.strictEqual(closes, 1);
+    assert.strictEqual(fs.readFileSync(lock, 'utf8'), '');
+    assert.strictEqual(capsule.verify(dir).entry_count, 0);
+    assert.throws(() => capsule.Capsule.open(dir).append('plan', 'blocked', {}), error => error.code === 'capsule.busy');
+  } finally {
+    fs.openSync = original.open; fs.writeSync = original.write; fs.closeSync = original.close; cleanup(dir);
+  }
+});
+
+test('short ownership-token writes finish before the journal is acknowledged', () => {
+  const dir = tempDir('short-token');
+  const lock = appendLock(dir);
+  const original = { open: fs.openSync, write: fs.writeSync };
+  let ownedFd;
+  let tokenChunks = 0;
+  try {
+    const c = capsule.Capsule.create(dir);
+    fs.openSync = (file, flags, ...args) => {
+      const fd = original.open(file, flags, ...args);
+      if (file === lock && flags === 'wx') ownedFd = fd;
+      return fd;
+    };
+    fs.writeSync = (fd, data, offset, length, position) => {
+      if (fd === ownedFd) { tokenChunks += 1; return original.write(fd, data, offset, Math.min(length, 3), position); }
+      return original.write(fd, data, offset, length, position);
+    };
+    assert.strictEqual(c.append('plan', 'owner', {}).seq, 0);
+    assert.ok(tokenChunks > 1);
+    assert.strictEqual(capsule.verify(dir).entry_count, 1);
+    assert.strictEqual(fs.existsSync(lock), false);
+  } finally { fs.openSync = original.open; fs.writeSync = original.write; cleanup(dir); }
+});
 
 test('invalid payloads leave journal unchanged and release the append lock', () => {
   const dir = tempDir();
