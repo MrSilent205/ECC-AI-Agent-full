@@ -71,6 +71,7 @@ test('actual CLI closes six excess PRs, locks them, blocks with owner identity, 
     await run();
     assert.equal(mutations.filter(m => m.route.endsWith('/issues') && m.method === 'POST').length, 1);
     assert.equal(mutations.filter(m => /\/pulls\/\d+$/.test(m.route)).length, 6);
+    assert.equal(mutations.filter(m => m.route.endsWith('/lock')).length, 6);
     assert.equal(new Set(mutations.filter(m => m.route.endsWith('/lock')).map(m => m.route)).size, 6);
     assert(mutations.some(m => m.route === '/user/blocks/contributor' && m.token === 'Bearer owner-token'));
     assert(mutations.filter(m => m.route.startsWith('/repos/')).every(m => m.token === 'Bearer moderation-token'));
