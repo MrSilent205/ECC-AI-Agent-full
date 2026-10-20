@@ -90,7 +90,12 @@ function isOpenCodePluginEntrypoint(operation = {}) {
 function getDisabledOpenCodePluginContent() {
   // OpenCode discovers plugins independently of opencode.json registration.
   // Do not import the original module: even module initialization has effects.
-  return 'export default async () => ({});\n';
+  // The stub must still satisfy the V2 loader schema: the default export has to
+  // be a definition object with an id and an effect or setup function. A factory
+  // (`export default async () => ({})`) is rejected at startup with
+  // PluginModule.LoadError / SchemaError(Expected object at ["default"]), which
+  // is the same failure reported for the V1 hook plugin in issue #3537.
+  return 'export default { id: "ecc-hooks", setup() {} };\n';
 }
 
 function isOpenCodeHookActivationOperation(operation = {}) {
