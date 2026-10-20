@@ -86,15 +86,18 @@ function strongestWindow(rows, current, policy, eventTime) {
   return { ...peak, excess: peak.denied ? peak.excess : [...excess.values()] };
 }
 
-/** Open-PR cap: keep the author's oldest `maxOpen` open PRs, close the rest. PRs the burst
- *  guard already closed in this run are treated as closed so nothing is mutated twice. */
-function capExcess(openRows, current, policy, alreadyClosed = new Set()) {
+/** Only the triggering PR may be closed by the cap. Reopening consumes a new
+ *  slot even if that PR is older than the author's other open PRs. */
+function capExcess(openRows, current, policy, alreadyClosed = new Set(), action = 'opened') {
   validatePolicy(policy);
   const open = [...new Map([...openRows, current].map(pr => [pr.number, pr])).values()]
     .filter(pr => pr.user.id === current.user.id && pr.state === 'open' && !alreadyClosed.has(pr.number))
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.number - b.number);
+  const currentIndex = open.findIndex(pr => pr.number === current.number);
   return { openCount: open.length, maxOpen: policy.maxOpen,
-    capExcess: open.slice(policy.maxOpen).map(pr => ({ number: pr.number, state: pr.state })) };
+    capExcess: open.length > policy.maxOpen && currentIndex >= 0
+      && (action === 'reopened' || currentIndex >= policy.maxOpen)
+      ? [{ number: current.number, state: current.state }] : [] };
 }
 
 const CAP_MARKER = '<!-- ecc-pr-open-cap -->';
@@ -189,7 +192,7 @@ async function moderate({ api, blockAPI, repository, number, action = 'opened', 
     dryRun, errors: [], blockStatus: 'Below blocking threshold' };
   // Total open PRs is a separate, unwindowed list: the burst scan stops at the window edge.
   const openRows = await listPages(api, `${root}/pulls?state=open&sort=created&direction=desc`);
-  Object.assign(result, capExcess(openRows, current, policy, new Set(result.excess.map(pr => pr.number))));
+  Object.assign(result, capExcess(openRows, current, policy, new Set(result.excess.map(pr => pr.number)), action));
   if (dryRun) {
     if (result.block) result.blockStatus = 'Dry run: would attempt owner-scoped blocking';
     return result;

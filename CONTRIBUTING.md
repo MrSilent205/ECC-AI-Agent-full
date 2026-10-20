@@ -442,8 +442,9 @@ still count toward the window. Contributors with repository write access bypass
 this policy. Maintainers can review exceptions through the moderation alert.
 
 Please also keep at most ten PRs open at a time. When you open or reopen a PR
-above that cap, automation closes the newest ones with a comment explaining the
-count. Get existing PRs merged or close the ones you no longer need, then reopen.
+above that cap, automation closes that PR with a comment explaining the count.
+Existing open PRs remain open. Get PRs merged or close the ones you no longer
+need, then reopen.
 Ten open PRs is more than any one reviewer can keep in flight, so this keeps
 review time on the work you care about most.
 
