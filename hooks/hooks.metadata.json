@@ -150,6 +150,11 @@
         "id": "session:end:marker",
         "description": "Session end lifecycle marker (non-blocking)",
         "fingerprint": "4ab026fcc7fc"
+      },
+      {
+        "id": "session:end:feedback",
+        "description": "Ask working installs for feedback at two session milestones, at most once each",
+        "fingerprint": "32f7ad3b6114"
       }
     ]
   }

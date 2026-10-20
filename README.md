@@ -2190,6 +2190,11 @@ The short version:
 - **Longform Guide (Advanced):** [The Longform Guide to ECC](https://x.com/affaan/status/2014040193557471352)
 - **Security Guide:** [Security Guide](./the-security-guide.md) | [Thread](https://x.com/affaan/status/2033263813387223421)
 - **Follow:** [@affaan](https://x.com/affaan)
+- **Getting help:** [SUPPORT.md](./SUPPORT.md)
+- **What ships next:** [ROADMAP.md](./ROADMAP.md)
+- **Who runs ECC:** [ADOPTERS.md](./ADOPTERS.md)
+- **Citing ECC:** [CITATION.cff](./CITATION.cff)
+- **Machine-readable catalog:** [llms.txt](./llms.txt) | [full catalog](./docs/discovery/llms-full.txt) | [JSON index](./docs/DISCOVERY-INDEX.json)
 
 ## License
 
