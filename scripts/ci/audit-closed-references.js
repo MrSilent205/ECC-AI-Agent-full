@@ -221,7 +221,7 @@ function buildSummary(verdicts, references, incomplete) {
   summaryIncomplete(lines, incomplete);
   const unmerged = verdicts.filter((v) => v.verdict === 'unmerged');
   const unverifiable = verdicts.filter((v) => v.verdict === 'unverifiable');
-  lines.push('', `${verdicts.length} asserted delivery claim(s) checked: ${unmerged.length} unmerged finding(s), ${unverifiable.length} unverifiable.`);
+  lines.push('', `${verdicts.length} asserted delivery claim(s) found: ${unmerged.length} unmerged finding(s), ${unverifiable.length} unverifiable.`);
   summaryFindings(lines, unmerged);
   summaryUnverifiable(lines, unverifiable);
   summaryPasses(lines, verdicts.filter((v) => v.verdict === 'pass'));
@@ -279,8 +279,11 @@ function fetchPullState(env, number) {
   }
 }
 
-function fetchPullStates(env, prNumbers) {
+function fetchPullStates(env, prNumbers, incomplete) {
   const states = new Map();
+  if (prNumbers.length > MAX_PR_CHECKS) {
+    incomplete.push(`${prNumbers.length - MAX_PR_CHECKS} cited PR(s) not checked: PR check limit of ${MAX_PR_CHECKS} reached`);
+  }
   for (const number of prNumbers.slice(0, MAX_PR_CHECKS)) {
     states.set(number, fetchPullState(env, number));
   }
@@ -301,7 +304,7 @@ function main() {
   const { entries, incomplete } = collectEntries(
     () => issuesResult, fetchComments, Date.now(), DEFAULT_WINDOW_DAYS
   );
-  const pullStates = fetchPullStates(env, uniqueClaimPrs(entries));
+  const pullStates = fetchPullStates(env, uniqueClaimPrs(entries), incomplete);
   const verdicts = buildVerdicts(entries, pullStates);
   const references = collectReferences(entries);
   const report = buildSummary(verdicts, references, incomplete).join('\n');

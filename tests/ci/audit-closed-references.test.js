@@ -216,6 +216,41 @@ function run() {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
+  check('CLI fixture: 101 distinct cited PRs report the unchecked claim and incomplete audit', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-cap-'));
+    try {
+      const stub = path.join(tmp, 'stub-gh.js');
+      fs.writeFileSync(stub, `
+        const args = process.argv.slice(2);
+        if (args.some((a) => a.includes('/issues?state=closed'))) {
+          const body = Array.from({ length: 101 }, (_, i) => 'fixed in #' + (i + 1)).join('; ');
+          const issue = { number: 99, state: 'closed', closed_at: new Date().toISOString(), html_url: 'u99', title: 'delivery', body };
+          process.stdout.write(JSON.stringify([[issue]]));
+        } else if (args.some((a) => a.includes('/issues/99/comments'))) {
+          process.stdout.write(JSON.stringify([[]]));
+        } else if (args.some((a) => a.includes('/pulls/'))) {
+          process.stdout.write(JSON.stringify({ state: 'closed', merged: true }));
+        } else {
+          process.stderr.write('unexpected args');
+          process.exit(2);
+        }
+      `);
+      const summaryPath = path.join(tmp, 'summary.md');
+      execFileSync(process.execPath, [SCRIPT_PATH], {
+        env: { ...process.env, GITHUB_REPOSITORY: 'example/repo', GITHUB_STEP_SUMMARY: summaryPath, AUDIT_GH_SCRIPT: stub },
+        encoding: 'utf8',
+      });
+      const summary = fs.readFileSync(summaryPath, 'utf8');
+      assert.match(summary, /\*\*Audit incomplete\*\*/);
+      assert.match(summary, /1 cited PR\(s\) not checked: PR check limit of 100 reached/);
+      assert.match(summary, /101 asserted delivery claim\(s\) found: 0 unmerged finding\(s\), 1 unverifiable/);
+      assert.match(summary, /#101: unavailable \(not fetched\)/);
+      assert.match(summary, /#100: merged/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   console.log(`\nPassed: ${passed}  Failed: ${failed}`);
   if (failed > 0) process.exit(1);
 }
