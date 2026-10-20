@@ -60,6 +60,14 @@ function groupFailures(skillRuns) {
   return groups;
 }
 
+function compareTimestampsDescending(a, b) {
+  const timeA = Date.parse(a);
+  const timeB = Date.parse(b);
+  if (Number.isNaN(timeA)) return Number.isNaN(timeB) ? 0 : 1;
+  if (Number.isNaN(timeB)) return -1;
+  return timeB - timeA;
+}
+
 /**
  * Detect recurring failure patterns from skill runs.
  *
@@ -79,7 +87,7 @@ function detectPatterns(skillRuns, options = {}) {
     }
 
     const sortedRuns = [...group.runs].sort(
-      (a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')
+      (a, b) => compareTimestampsDescending(a.createdAt, b.createdAt)
     );
 
     const firstSeen = sortedRuns[sortedRuns.length - 1].createdAt || null;
@@ -106,7 +114,7 @@ function detectPatterns(skillRuns, options = {}) {
   // Sort by count descending, then by lastSeen descending
   return patterns.sort((a, b) => {
     if (b.count !== a.count) return b.count - a.count;
-    return (b.lastSeen || '').localeCompare(a.lastSeen || '');
+    return compareTimestampsDescending(a.lastSeen, b.lastSeen);
   });
 }
 
