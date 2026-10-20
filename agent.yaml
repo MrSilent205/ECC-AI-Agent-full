@@ -177,6 +177,7 @@ skills:
   - videodb
   - visa-doc-translate
   - x-api
+  - yoruba-localization-testing
 commands:
   - aside
   - astra-review
