@@ -306,6 +306,66 @@ To provision it (whoever creates it pays the small rent, not the payer):
 
 This bites hardest when payouts go to freshly provisioned or custodial wallets, which often have no ATA for the asset yet.
 
+**Sellers: run the route once per payment authorization.** The middleware verifies the payment, runs your handler, then settles. Verification does not consume the authorization (settlement does), so one signed payment sent several times at once passes verify every time and runs your handler every time. The facilitator settles only one copy, and the others get a 402 without the response, so nobody receives free output. But every side effect in the handler (an LLM call, a queued job, an on-chain transaction) happens once per copy. On a production seller (Python `x402` 2.9.0, FastAPI), one authorization sent three times concurrently produced three handler runs and one settlement. A paid-call counter inside the handler overstates revenue the same way; count after settlement instead. The wider verify-to-settle race is discussed in [x402#1169](https://github.com/x402-foundation/x402/issues/1169).
+
+Claim each authorization once, with an atomic insert, before the payment middleware runs:
+
+```typescript
+import { createHash } from "node:crypto";
+import { getBase64Encoder, getTransactionDecoder } from "@solana/kit";
+import { createClient } from "redis";
+
+const redis = await createClient({ url: process.env.REDIS_URL }).connect();
+
+// One key per authorization, not per header: re-encoding the same signed
+// payment must not make it look new.
+function claimKey(header: string): string {
+  try {
+    const p = JSON.parse(Buffer.from(header, "base64").toString("utf8"));
+    const network = p.accepted?.network ?? "";
+    const auth = p.payload?.authorization;
+    if (auth?.from && auth?.nonce) {
+      // EVM exact (EIP-3009): the token contract accepts each (from, nonce) once.
+      return `x402:${network}:${String(auth.from).toLowerCase()}:${String(auth.nonce).toLowerCase()}`;
+    }
+    if (typeof p.payload?.transaction === "string") {
+      // SVM exact: hash the message the payer signed, not the whole transaction.
+      // The fee payer's signature slot sits outside the payer's signature, so a
+      // copy with different bytes there is still the same payment.
+      const tx = getTransactionDecoder().decode(getBase64Encoder().encode(p.payload.transaction));
+      return `x402:${network}:${createHash("sha256").update(tx.messageBytes).digest("hex")}`;
+    }
+  } catch {
+    // Unparseable: fall through to the raw header, which still catches exact copies.
+  }
+  return `x402:raw:${createHash("sha256").update(header).digest("hex")}`;
+}
+
+// Register on paid routes, before the x402 payment middleware.
+async function replayGuard(req, res, next) {
+  const header = req.get("payment-signature") ?? req.get("x-payment");
+  if (!header) return next();
+  let first = true;
+  try {
+    // NX is atomic: of two simultaneous copies exactly one wins. EX only has to
+    // outlive the route's maxTimeoutSeconds; after that the authorization is dead.
+    first = (await redis.set(claimKey(header), "1", { NX: true, EX: 900 })) === "OK";
+  } catch {
+    // Fail open: the facilitator still refuses a second settlement, so a store
+    // outage degrades to the unguarded behaviour instead of blocking buyers.
+  }
+  if (!first) {
+    return res.status(402).json({
+      error: "payment_replayed",
+      detail: "This payment authorization was already presented. Sign a fresh one for each request.",
+    });
+  }
+  next();
+}
+```
+
+Any store with a conditional insert works: DynamoDB `PutItem` with `attribute_not_exists`, or a unique index in Postgres. The client-side cost is that a request retried with the same signature (for example after a 5xx, when settlement was skipped) is now refused; the upstream clients already sign a fresh authorization for each 402. This closes duplicate copies of one authorization only. A payer who invalidates the payment between verify and settle (for example by moving the funds) still gets one handler run; for expensive routes, hold funds before doing the work.
+
 **Discovery.** Facilitators that implement the x402 bazaar extension expose a `/discovery/resources` endpoint — query the CDP catalog at `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources` and the PayAI catalog at `https://facilitator.payai.network/discovery/resources`. For Solana-payable services there is also [pay.sh](https://pay.sh), the Solana Foundation's curated catalog.
 
 ## Examples

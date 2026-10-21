@@ -305,6 +305,66 @@ curl -s https://api.mainnet-beta.solana.com -X POST -H 'Content-Type: applicatio
 
 这个问题在向新开通的钱包或托管钱包付款时最容易出现，这类钱包往往还没有该资产的 ATA。
 
+**卖方：每个支付授权只运行一次路由。** 中间件先验证支付，再运行处理程序，然后结算。验证不会消耗授权（结算才会），因此同一笔已签名的支付同时发送多次，每次都能通过验证，每次都会运行处理程序。结算器只结算其中一份副本，其余副本收到不带响应的 402，所以没有人能免费获得输出。但处理程序中的每个副作用（LLM 调用、排队任务、链上交易）都会按副本数重复发生。在一个生产卖方（Python `x402` 2.9.0、FastAPI）上，同一授权并发发送三次，处理程序运行了三次，结算一次。放在处理程序内的付费调用计数器也会以同样方式高估收入；应在结算后计数。更广泛的验证到结算竞态在 [x402#1169](https://github.com/x402-foundation/x402/issues/1169) 中讨论。
+
+在支付中间件运行之前，用原子插入将每个授权只认领一次：
+
+```typescript
+import { createHash } from "node:crypto";
+import { getBase64Encoder, getTransactionDecoder } from "@solana/kit";
+import { createClient } from "redis";
+
+const redis = await createClient({ url: process.env.REDIS_URL }).connect();
+
+// One key per authorization, not per header: re-encoding the same signed
+// payment must not make it look new.
+function claimKey(header: string): string {
+  try {
+    const p = JSON.parse(Buffer.from(header, "base64").toString("utf8"));
+    const network = p.accepted?.network ?? "";
+    const auth = p.payload?.authorization;
+    if (auth?.from && auth?.nonce) {
+      // EVM exact (EIP-3009): the token contract accepts each (from, nonce) once.
+      return `x402:${network}:${String(auth.from).toLowerCase()}:${String(auth.nonce).toLowerCase()}`;
+    }
+    if (typeof p.payload?.transaction === "string") {
+      // SVM exact: hash the message the payer signed, not the whole transaction.
+      // The fee payer's signature slot sits outside the payer's signature, so a
+      // copy with different bytes there is still the same payment.
+      const tx = getTransactionDecoder().decode(getBase64Encoder().encode(p.payload.transaction));
+      return `x402:${network}:${createHash("sha256").update(tx.messageBytes).digest("hex")}`;
+    }
+  } catch {
+    // Unparseable: fall through to the raw header, which still catches exact copies.
+  }
+  return `x402:raw:${createHash("sha256").update(header).digest("hex")}`;
+}
+
+// Register on paid routes, before the x402 payment middleware.
+async function replayGuard(req, res, next) {
+  const header = req.get("payment-signature") ?? req.get("x-payment");
+  if (!header) return next();
+  let first = true;
+  try {
+    // NX is atomic: of two simultaneous copies exactly one wins. EX only has to
+    // outlive the route's maxTimeoutSeconds; after that the authorization is dead.
+    first = (await redis.set(claimKey(header), "1", { NX: true, EX: 900 })) === "OK";
+  } catch {
+    // Fail open: the facilitator still refuses a second settlement, so a store
+    // outage degrades to the unguarded behaviour instead of blocking buyers.
+  }
+  if (!first) {
+    return res.status(402).json({
+      error: "payment_replayed",
+      detail: "This payment authorization was already presented. Sign a fresh one for each request.",
+    });
+  }
+  next();
+}
+```
+
+任何支持条件插入的存储都可以：DynamoDB 带 `attribute_not_exists` 的 `PutItem`，或 Postgres 的唯一索引。客户端的代价是，使用同一签名重试的请求（例如在 5xx 之后，结算被跳过时）现在会被拒绝；上游客户端本来就会为每个 402 签署新的授权。这只能阻止同一授权的重复副本。在验证和结算之间使支付失效的付款方（例如转走资金）仍能触发一次处理程序运行；对于高成本路由，应在执行工作前先锁定资金。
+
 **发现。** 实现 x402 集市扩展的结算器会公开 `/discovery/resources` 端点——可在 `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources` 查询 CDP 目录，在 `https://facilitator.payai.network/discovery/resources` 查询 PayAI 目录。对于 Solana 可付费服务，还有 Solana 基金会的精选目录 [pay.sh](https://pay.sh)。
 
 ## 示例

@@ -305,6 +305,66 @@ curl -s https://api.mainnet-beta.solana.com -X POST -H 'Content-Type: applicatio
 
 これは新規プロビジョニングされたウォレットやカストディアルウォレットへの支払いで最も問題になりやすい。そうしたウォレットは対象アセットの ATA をまだ持っていないことが多い。
 
+**セラー：1 つの支払い承認につきルートは 1 回だけ実行する。** ミドルウェアは支払いを検証し、ハンドラーを実行し、その後で決済する。検証は承認を消費しない（消費するのは決済）ため、同じ署名済み支払いを同時に複数回送ると、毎回検証を通り、毎回ハンドラーが実行される。ファシリテーターが決済するのは 1 つのコピーだけで、残りはレスポンスなしの 402 を受け取るので、誰も無料で出力を得ることはない。しかしハンドラー内の副作用（LLM 呼び出し、ジョブのキュー投入、オンチェーントランザクション）はコピーごとに発生する。本番のセラー（Python `x402` 2.9.0、FastAPI）では、1 つの承認を同時に 3 回送ると、ハンドラーが 3 回実行され、決済は 1 回だった。ハンドラー内の有料呼び出しカウンターも同じように売上を過大に数えるので、決済後に数えること。検証から決済までのより広い競合については [x402#1169](https://github.com/x402-foundation/x402/issues/1169) で議論されている。
+
+各承認を、支払いミドルウェアが実行される前に、アトミックな挿入で 1 回だけ取得する：
+
+```typescript
+import { createHash } from "node:crypto";
+import { getBase64Encoder, getTransactionDecoder } from "@solana/kit";
+import { createClient } from "redis";
+
+const redis = await createClient({ url: process.env.REDIS_URL }).connect();
+
+// One key per authorization, not per header: re-encoding the same signed
+// payment must not make it look new.
+function claimKey(header: string): string {
+  try {
+    const p = JSON.parse(Buffer.from(header, "base64").toString("utf8"));
+    const network = p.accepted?.network ?? "";
+    const auth = p.payload?.authorization;
+    if (auth?.from && auth?.nonce) {
+      // EVM exact (EIP-3009): the token contract accepts each (from, nonce) once.
+      return `x402:${network}:${String(auth.from).toLowerCase()}:${String(auth.nonce).toLowerCase()}`;
+    }
+    if (typeof p.payload?.transaction === "string") {
+      // SVM exact: hash the message the payer signed, not the whole transaction.
+      // The fee payer's signature slot sits outside the payer's signature, so a
+      // copy with different bytes there is still the same payment.
+      const tx = getTransactionDecoder().decode(getBase64Encoder().encode(p.payload.transaction));
+      return `x402:${network}:${createHash("sha256").update(tx.messageBytes).digest("hex")}`;
+    }
+  } catch {
+    // Unparseable: fall through to the raw header, which still catches exact copies.
+  }
+  return `x402:raw:${createHash("sha256").update(header).digest("hex")}`;
+}
+
+// Register on paid routes, before the x402 payment middleware.
+async function replayGuard(req, res, next) {
+  const header = req.get("payment-signature") ?? req.get("x-payment");
+  if (!header) return next();
+  let first = true;
+  try {
+    // NX is atomic: of two simultaneous copies exactly one wins. EX only has to
+    // outlive the route's maxTimeoutSeconds; after that the authorization is dead.
+    first = (await redis.set(claimKey(header), "1", { NX: true, EX: 900 })) === "OK";
+  } catch {
+    // Fail open: the facilitator still refuses a second settlement, so a store
+    // outage degrades to the unguarded behaviour instead of blocking buyers.
+  }
+  if (!first) {
+    return res.status(402).json({
+      error: "payment_replayed",
+      detail: "This payment authorization was already presented. Sign a fresh one for each request.",
+    });
+  }
+  next();
+}
+```
+
+条件付き挿入ができるストアなら何でもよい：DynamoDB の `attribute_not_exists` 付き `PutItem`、または Postgres のユニークインデックス。クライアント側のコストは、同じ署名で再試行したリクエスト（たとえば 5xx の後、決済がスキップされた場合）が拒否されるようになることだ。アップストリームのクライアントは 402 ごとに新しい承認に署名する。これが防ぐのは 1 つの承認の重複コピーだけである。検証と決済の間に支払いを無効にする支払者（たとえば資金を移動する）は、依然としてハンドラーを 1 回実行させられる。高コストなルートでは、作業の前に資金を確保すること。
+
 **発見。** x402 バザール拡張を実装するファシリテーターは `/discovery/resources` エンドポイントを公開する — CDP カタログは `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources`、PayAI カタログは `https://facilitator.payai.network/discovery/resources` で照会できる。Solana で支払い可能なサービスには、Solana Foundation のキュレーションカタログである [pay.sh](https://pay.sh) もある。
 
 ## 例
