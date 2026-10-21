@@ -38,9 +38,35 @@ try {
       $: () => { throw new Error('Offline fixture must not execute shell commands'); },
       directory: process.cwd(), worktree: process.cwd() };
     const loaded = [];
+    // The installed plugin is framework-free: its default export is an object
+    // that carries both loader contracts (v1 server, v2 setup), so the
+    // harness has to resolve the plugin the way the host does instead of
+    // calling every export as a function.
+    const collectSetupHooks = async (setup, ctx) => {
+      const hooks = {};
+      const toolHook = (name, fn) => {
+        if (name === 'execute.before') hooks['tool.execute.before'] = fn;
+        if (name === 'execute.after') hooks['tool.execute.after'] = fn;
+      };
+      const shellHook = (name, fn) => {
+        if (name === 'create.before') hooks['shell.env'] = fn;
+      };
+      await setup({
+        ...ctx,
+        tool: { hook: toolHook, transform: () => {} },
+        shell: { hook: shellHook },
+        session: { hook: () => {} },
+        permission: { hook: () => {} },
+        event: { subscribe: () => ({ [Symbol.asyncIterator]: async function* () {} }) },
+      });
+      return hooks;
+    };
     for (const name of fs.readdirSync(path.join(root, 'plugins')).filter(name => /\\.ts$/.test(name))) {
       const mod = await import(pathToFileURL(path.join(root, 'plugins', name)).href);
-      for (const entry of new Set(Object.values(mod))) loaded.push(await entry(context));
+      const plugin = mod.default;
+      if (!plugin || typeof plugin !== 'object') continue;
+      if (typeof plugin.server === 'function') loaded.push(await plugin.server(context));
+      else if (typeof plugin.setup === 'function') loaded.push(await collectSetupHooks(plugin.setup, context));
     }
     const live = loaded.filter(hooks => typeof hooks['tool.execute.after'] === 'function');
     assert.equal(live.length, 1, 'Local discovery must register exactly one live ECC plugin');

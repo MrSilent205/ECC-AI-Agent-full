@@ -34,7 +34,7 @@ const zhCnReadmePath = path.join(repoRoot, 'docs', 'zh-CN', 'README.md');
 const selectiveInstallArchitecturePath = path.join(repoRoot, 'docs', 'SELECTIVE-INSTALL-ARCHITECTURE.md');
 const opencodePackageJsonPath = path.join(repoRoot, '.opencode', 'package.json');
 const opencodePackageLockPath = path.join(repoRoot, '.opencode', 'package-lock.json');
-const opencodeHooksPluginPath = path.join(repoRoot, '.opencode', 'plugins', 'index.ts');
+const opencodeHooksPluginPath = path.join(repoRoot, '.opencode', 'plugins', 'ecc', 'runtime.ts');
 const hooksReadmePath = path.join(repoRoot, 'hooks', 'README.md');
 const semverPattern = '[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?';
 const installPrPublishedBaseline = '2.1.0';
@@ -171,10 +171,10 @@ test('docs/SELECTIVE-INSTALL-ARCHITECTURE.md repoVersion example matches package
   assert.strictEqual(match[1], expectedVersion);
 });
 
-test('.opencode/plugins/ecc-hooks.ts active plugin banner matches package.json', () => {
+test('.opencode/plugins/ecc/runtime.ts active plugin banner matches package.json', () => {
   const source = fs.readFileSync(opencodeHooksPluginPath, 'utf8');
   const match = source.match(new RegExp(`## Active Plugin: ECC v(${semverPattern})`));
-  assert.ok(match, 'Expected .opencode/plugins/ecc-hooks.ts to declare an active plugin banner');
+  assert.ok(match, 'Expected .opencode/plugins/ecc/runtime.ts to declare an active plugin banner');
   assert.strictEqual(match[1], expectedVersion);
 });
 
