@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- Context-size detection keeps a complete usage record at the start of the transcript tail, so a boundary-aligned record still triggers the strategic-compact reminder. Partial records remain excluded.
 - GateGuard keys checked files by canonical path, resolving relative targets against the tool `cwd`, so `a.py`, `./a.py`, and the absolute path (or differently cased and separated Windows spellings) share one first touch. Keys from earlier state files are still honoured.
 - GateGuard gates a MultiEdit call as its `tool_input.file_path` when its entries do not name their own path, which is the tool's own shape; such calls were never gated before, including on sensitive files.
 - GateGuard gates NotebookEdit as a first-touch edit of its `notebook_path`; notebooks were never gated before.

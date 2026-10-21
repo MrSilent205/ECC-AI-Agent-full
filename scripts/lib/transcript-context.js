@@ -94,14 +94,16 @@ function readLatestContextTokens(transcriptPath, options = {}) {
 
   const tailBytes = Number.isInteger(options.tailBytes) && options.tailBytes > 0 ? options.tailBytes : DEFAULT_TRANSCRIPT_TAIL_BYTES;
 
-  const tail = readFileTail(transcriptPath, tailBytes);
+  // Include the preceding byte so a newline at the requested boundary keeps
+  // the first complete record; a mid-record boundary still gets discarded.
+  const tail = readFileTail(transcriptPath, tailBytes + 1, { includeByteLength: true });
   if (!tail) {
     return null;
   }
 
   const lines = tail.text.split('\n');
-  // The first line of a truncated tail is almost certainly partial JSON.
-  const firstLine = tail.truncated ? 1 : 0;
+  // Discard the extra boundary byte and any partial record containing it.
+  const firstLine = tail.truncated || tail.byteLength > tailBytes ? 1 : 0;
 
   for (let i = lines.length - 1; i >= firstLine; i--) {
     const line = lines[i].trim();

@@ -715,6 +715,32 @@ function runTests() {
   })) passed++;
   else failed++;
 
+  if (test('emits a context reminder for usage aligned with the default tail boundary', () => {
+    const ctx = createContextContext();
+    const transcript = writeTranscriptFixture(170000);
+    try {
+      const usageLine = fs.readFileSync(transcript, 'utf8');
+      const toolResult = JSON.stringify({ type: 'user', message: { content: '' } });
+      const tailBytes = require('../../scripts/lib/transcript-context').DEFAULT_TRANSCRIPT_TAIL_BYTES;
+      const padding = tailBytes - Buffer.byteLength(usageLine + toolResult + '\n');
+      const paddedResult = JSON.stringify({ type: 'user', message: { content: 'x'.repeat(padding) } });
+      fs.writeFileSync(transcript, '{}\n' + usageLine + paddedResult + '\n');
+      const result = runCompactWithInput(
+        { session_id: ctx.sessionId, transcript_path: transcript },
+        { ECC_CONTEXT_WINDOW_TOKENS: '', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '', COMPACT_CONTEXT_THRESHOLD: '160000' }
+      );
+      assert.strictEqual(result.code, 0, 'Should exit 0');
+      const parsed = JSON.parse(result.stdout);
+      assert.strictEqual(parsed.hookSpecificOutput.hookEventName, 'PreToolUse');
+      assert.ok(parsed.hookSpecificOutput.additionalContext.includes('Context ~170k tokens'));
+      assert.strictEqual(fs.readFileSync(ctx.bucketFile, 'utf8').trim(), '0');
+    } finally {
+      try { fs.unlinkSync(transcript); } catch (_err) { /* ignore */ }
+      ctx.cleanup();
+    }
+  })) passed++;
+  else failed++;
+
   if (test('stays silent below the context threshold', () => {
     const ctx = createContextContext();
     const transcript = writeTranscriptFixture(100000);

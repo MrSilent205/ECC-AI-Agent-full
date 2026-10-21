@@ -138,6 +138,64 @@ test('only scans the transcript tail (latest records win on large files)', () =>
   assert.strictEqual(result.tokens, 170000);
 });
 
+test('keeps a complete usage record at the truncated tail boundary', () => {
+  const record = usageRecord({ input: 100, cacheRead: 160000, cacheCreation: 2000 });
+  const file = tracked(writeTranscript([usageRecord({ input: 11 }), record]));
+  const result = readLatestContextTokens(file, { tailBytes: Buffer.byteLength(record + '\n') });
+  assert.deepStrictEqual(result, { tokens: 162100, model: 'claude-sonnet-4-6' });
+});
+
+test('keeps boundary-aligned usage before trailing tool results with UTF-8 content', () => {
+  const record = usageRecord({ input: 170000 });
+  const toolResult = JSON.stringify({ type: 'user', message: { content: '完成检查' } });
+  const file = tracked(writeTranscript([usageRecord({ input: 11 }), record, toolResult]));
+  const tailBytes = Buffer.byteLength([record, toolResult, ''].join('\n'));
+  assert.deepStrictEqual(readLatestContextTokens(file, { tailBytes }), {
+    tokens: 170000,
+    model: 'claude-sonnet-4-6'
+  });
+});
+
+test('skips a partial usage record at the truncated tail boundary', () => {
+  const record = usageRecord({ input: 170000 });
+  const toolResult = JSON.stringify({ type: 'user', message: { content: 'tool result' } });
+  const file = tracked(writeTranscript([usageRecord({ input: 11 }), record, toolResult]));
+  const tailBytes = Buffer.byteLength([record, toolResult, ''].join('\n')) - 1;
+  assert.strictEqual(readLatestContextTokens(file, { tailBytes }), null);
+});
+
+test('keeps boundary-aligned usage with the default 256 KiB tail', () => {
+  const record = usageRecord({ input: 170000 });
+  const toolResult = JSON.stringify({ type: 'user', message: { content: '' } });
+  const padding = DEFAULT_TRANSCRIPT_TAIL_BYTES - Buffer.byteLength(record + '\n' + toolResult + '\n');
+  const paddedResult = JSON.stringify({ type: 'user', message: { content: 'x'.repeat(padding) } });
+  const file = tracked(writeTranscript(['{}', record, paddedResult]));
+  assert.deepStrictEqual(readLatestContextTokens(file), {
+    tokens: 170000,
+    model: 'claude-sonnet-4-6'
+  });
+});
+
+test('does not parse an out-of-window record when lookbehind reaches the file start', () => {
+  const record = usageRecord({ input: 170000 });
+  const file = tracked(writeTranscript([record]));
+  assert.strictEqual(readLatestContextTokens(file, { tailBytes: Buffer.byteLength(record + '\n') - 1 }), null);
+});
+
+test('keeps an in-window usage record when the transcript ends in incomplete UTF-8', () => {
+  const record = usageRecord({ input: 170000 }) + '\n';
+  const padding = DEFAULT_TRANSCRIPT_TAIL_BYTES - Buffer.byteLength(record) - 2;
+  const file = tracked(writeTranscript([]));
+  fs.writeFileSync(file, Buffer.concat([
+    Buffer.from(record + 'x'.repeat(padding)),
+    Buffer.from([0xe4, 0xb8])
+  ]));
+  assert.deepStrictEqual(readLatestContextTokens(file), {
+    tokens: 170000,
+    model: 'claude-sonnet-4-6'
+  });
+});
+
 // ── resolveContextWindowTokens ──
 console.log('\nresolveContextWindowTokens:');
 
