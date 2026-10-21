@@ -38,6 +38,12 @@ const {
   validateManagedHooks,
 } = require('./install/claude-settings');
 const { transformInstallContent } = require('./install/content-transform');
+const {
+  isOpenCodeConfigTemplateOperation,
+  mergedOpenCodeConfigMatchesDesiredState,
+  mergeOpenCodeConfigContent,
+  parseJsonObjectContent,
+} = require('./install/opencode-config-merge');
 const { buildInstallIndex, rewriteRelativeLinks } = require('./install/link-rewrite');
 const { getInstallTargetAdapter, listInstallTargetAdapters } = require('./install-targets/registry');
 const { resolveInvocationEnvironment } = require('./invocation-environment');
@@ -238,6 +244,17 @@ function fileMatchesRecordedContent(filePath, operation) {
   }
 }
 
+// #3559: the merged OpenCode config activates ECC's hooks by carrying the
+// './plugins' registration. A deactivating plan expects that registration to
+// be gone, so its presence means the transition has not happened yet — the
+// recorded digest proves ownership, not completion of that transition.
+function openCodeConfigStillActivatesHooks(liveRawContent) {
+  const liveValue = parseJsonObjectContent(liveRawContent);
+  return liveValue !== null
+    && Array.isArray(liveValue.plugin)
+    && liveValue.plugin.includes('./plugins');
+}
+
 function isMarkdownPath(filePath) {
   return /\.(md|mdx|markdown)$/i.test(String(filePath || ''));
 }
@@ -320,9 +337,25 @@ function repairCopyFile(repoRoot, operation, trustedRoot, options) {
 
   if (operation.contentTransform || isMarkdownPath(operation.destinationPath)) {
     const source = readFileWithMetadataNoFollow(sourcePath, 'utf8');
+    let expectedContent = getExpectedCopyFileContent(operation, source.content, options.linkIndex);
+    // #3559: the OpenCode config destination is the user's live
+    // opencode.json. Repair must merge the template into it rather than
+    // clobber user-owned keys the merge install preserved.
+    if (isOpenCodeConfigTemplateOperation(operation)) {
+      const existingDestination = getContainedExistingPath(operation.destinationPath, trustedRoot, 'repair');
+      if (existingDestination) {
+        const mergedContent = mergeOpenCodeConfigContent(
+          readFileNoFollow(existingDestination, 'utf8'),
+          expectedContent
+        );
+        if (mergedContent !== null) {
+          expectedContent = mergedContent;
+        }
+      }
+    }
     writeContainedFile(
       operation.destinationPath,
-      getExpectedCopyFileContent(operation, source.content, options.linkIndex),
+      expectedContent,
       trustedRoot,
       'repair',
       source.mode & 0o777,
@@ -507,7 +540,41 @@ function retainDriftedCopy(operation, trustedRoot) {
   return null;
 }
 
+// #3559: merged OpenCode configs record the user's pre-install content.
+// Restore it instead of deleting the file, and only when ECC's recorded
+// write is intact — drifted files keep the preserveDriftedCopies policy so
+// newer user edits are never overwritten. Returns the uninstall result, or
+// null when the operation has no recorded content to restore.
+function uninstallRecordedCopy(operation, trustedRoot) {
+  const previousContent = getOperationPreviousContent(operation);
+  if (previousContent === null) return null;
+
+  const existingDestination = getContainedExistingPath(
+    operation.destinationPath,
+    trustedRoot,
+    'uninstall',
+    { allowFinalSymlink: true }
+  );
+  if (!existingDestination) return uninstallNoop();
+
+  const recordedDigest = /^[a-f0-9]{64}$/i.test(operation.contentSha256 || '')
+    ? operation.contentSha256.toLowerCase()
+    : null;
+  if (recordedDigest) {
+    const currentDigest = crypto.createHash('sha256')
+      .update(readFileNoFollow(existingDestination))
+      .digest('hex');
+    if (currentDigest !== recordedDigest) {
+      return uninstallRetained(operation);
+    }
+  }
+  writeContainedFile(operation.destinationPath, previousContent, trustedRoot, 'uninstall');
+  return uninstallNoop();
+}
+
 function uninstallCopyFile(operation, trustedRoot, options) {
+  const restored = uninstallRecordedCopy(operation, trustedRoot);
+  if (restored) return restored;
   if (options.preserveDriftedCopies) {
     const retained = retainDriftedCopy(operation, trustedRoot);
     if (retained) return retained;
@@ -621,6 +688,7 @@ function inspectionResult(status, operation, destinationPath, extra = {}) {
   };
 }
 
+// #3559: the merged OpenCode config activates ECC's hooks by carrying the
 // Compare installed bytes with what the recorded copy operation should have
 // written. Throws when either side cannot be read.
 function copyFileContentMatches(operation, inspectedPath, copySourcePath, linkIndex) {
@@ -628,6 +696,27 @@ function copyFileContentMatches(operation, inspectedPath, copySourcePath, linkIn
   // active-file digest proves ownership, not completion of that transition.
   const deactivatesOpenCode = operation.contentTransform === 'opencode-disable-ecc-hooks'
     || operation.contentTransform === 'opencode-disable-plugin-entrypoint';
+  if (isOpenCodeConfigTemplateOperation(operation)) {
+    // #3559: the destination is the user's live merged `opencode.json`.
+    // Desired state is "ECC's keys match the transformed template, user
+    // keys are arbitrary": the recorded digest (the merged bytes ECC
+    // installed) is the fast path, and a structural merge comparison
+    // decides when only user-owned keys moved, so a correct merged
+    // config is never reported as drift and repair stays idempotent.
+    // A config that still activates ECC hooks under a deactivating plan
+    // is always drift: that transition has not happened yet.
+    const liveContent = readFileNoFollow(inspectedPath, 'utf8');
+    const expectedTemplateContent = getExpectedCopyFileContent(
+      operation,
+      readFileNoFollow(copySourcePath, 'utf8'),
+      linkIndex
+    );
+    return !(deactivatesOpenCode && openCodeConfigStillActivatesHooks(liveContent))
+      && (
+        (hasRecordedContentDigest(operation) && fileMatchesRecordedContent(inspectedPath, operation))
+        || mergedOpenCodeConfigMatchesDesiredState(liveContent, expectedTemplateContent)
+      );
+  }
   if (hasRecordedContentDigest(operation) && !deactivatesOpenCode) {
     return fileMatchesRecordedContent(inspectedPath, operation);
   }
@@ -1365,7 +1454,7 @@ function assertValidInstallStateForWrite(state, label) {
   throw new Error(`Invalid install-state (${label}): ${details}`);
 }
 
-function writeRefreshedInstallState(record, statePreview, writtenPaths = []) {
+function writeRefreshedInstallState(record, statePreview, writtenPaths = [], preserveDriftedPaths = []) {
   const trustedStatePreview = buildAdapterDerivedStatePreview(statePreview, record);
   const stateWithCurrentDigests = {
     ...trustedStatePreview,
@@ -1385,6 +1474,27 @@ function writeRefreshedInstallState(record, statePreview, writtenPaths = []) {
           && path.relative(previous.destinationPath, operation.destinationPath) === ''
         ));
         const { contentSha256: _plannedDigest, ...operationWithoutDigest } = operation;
+        return previousOperation && previousOperation.contentSha256
+          ? { ...operationWithoutDigest, contentSha256: previousOperation.contentSha256 }
+          : operationWithoutDigest;
+      }
+      // #3559: repair merges a drifted OpenCode config into the user's live
+      // document, so the rewritten file carries user edits made after the
+      // install. Refreshing the digest would let uninstall mistake those
+      // edits for installer-owned bytes and restore the stale pre-merge
+      // snapshot over them. Keep the pre-repair digest for such paths so
+      // uninstall keeps retaining the edited file.
+      if (
+        isOpenCodeConfigTemplateOperation(operation)
+        && preserveDriftedPaths.some(driftedPath => (
+          path.relative(driftedPath, operation.destinationPath) === ''
+        ))
+      ) {
+        const previousOperation = (record.state.operations || []).find(previous => (
+          previous.destinationPath
+          && path.relative(previous.destinationPath, operation.destinationPath) === ''
+        ));
+        const { contentSha256: _driftedDigest, ...operationWithoutDigest } = operation;
         return previousOperation && previousOperation.contentSha256
           ? { ...operationWithoutDigest, contentSha256: previousOperation.contentSha256 }
           : operationWithoutDigest;
@@ -1668,6 +1778,52 @@ function removeLegacyMigrationPaths(record, migration, repairedPaths) {
   }
 }
 
+// #3559: capture drift against the recorded ledger BEFORE any repair write:
+// reading the destination after the repair rewrote it would mistake the
+// write's own byte change (e.g. an intact deactivation transition) for
+// post-install user edits and wrongly preserve the stale digest. Pre-repair
+// bytes are the ground truth for "did the user edit this file since ECC last
+// wrote it".
+function collectDriftedOpenCodeConfigPaths(record, operationHealth) {
+  return operationHealth.drifted
+    .filter(entry => isOpenCodeConfigTemplateOperation(entry.operation))
+    .filter(entry => {
+      const recordedOperation = (record.state.operations || []).find(previous => (
+        previous.destinationPath
+        && path.relative(previous.destinationPath, entry.destinationPath) === ''
+      ));
+      if (!recordedOperation || !hasRecordedContentDigest(recordedOperation)) {
+        return true;
+      }
+      try {
+        return crypto.createHash('sha256')
+          .update(readFileNoFollow(entry.destinationPath))
+          .digest('hex') !== recordedOperation.contentSha256.toLowerCase();
+      } catch (_error) {
+        return true;
+      }
+    })
+    .map(entry => entry.destinationPath);
+}
+
+// #3559: a drifted merged config whose live content is not a JSON object
+// cannot be merged into — install-time treatment for such files is a full
+// skip, so repair must not fall back to a wholesale template write that
+// clobbers the user's document. Retain the file untouched and keep the
+// recorded ledger digest for it.
+function collectUnmergeableOpenCodeConfigPaths(operationHealth) {
+  return operationHealth.drifted
+    .filter(entry => isOpenCodeConfigTemplateOperation(entry.operation))
+    .filter(entry => {
+      try {
+        return parseJsonObjectContent(readFileNoFollow(entry.destinationPath, 'utf8')) === null;
+      } catch (_error) {
+        return true;
+      }
+    })
+    .map(entry => entry.destinationPath);
+}
+
 function applyRecordRepairs(repair, build, plan) {
   const { record } = repair;
   const { needsOpencodeBuild, opencodeBuildRepairPath } = build;
@@ -1704,7 +1860,20 @@ function applyRecordRepairs(repair, build, plan) {
         source: { ...record.state.source },
       };
   assertOpenCodeRepairHookDeactivation(desiredPlan, { requireInactive: true });
-  writeRefreshedInstallState(record, statePreviewToWrite, repairedPaths);
+  // #3559: for drifted merged configs whose pre-repair bytes were NOT the
+  // recorded install bytes, the merge write preserves the user's edits, so
+  // the ledger keeps the pre-repair digest: refreshing it would let
+  // uninstall restore the stale pre-merge snapshot over them. Transition
+  // writes (digest still matching, hooks deactivating) keep refreshing — the
+  // user's pre-install snapshot remains the right uninstall target.
+  // Unmergeable (non-object) configs keep their recorded digest so the
+  // untouched file is never claimed.
+  writeRefreshedInstallState(
+    record,
+    statePreviewToWrite,
+    repairedPaths,
+    plan.preserveDriftedPaths || []
+  );
 
   return {
     adapter: record.adapter,
@@ -1713,7 +1882,7 @@ function applyRecordRepairs(repair, build, plan) {
     repairedPaths,
     plannedRepairs: [],
     stateRefreshed: true,
-    warnings: desiredPlan.warnings,
+    warnings: [...desiredPlan.warnings, ...(plan.repairSkippedConfigWarnings || [])],
     error: null
   };
 }
@@ -1751,13 +1920,27 @@ function repairManagedRecord(repair, build) {
   }
 
   const repairOperations = collectRepairOperations(operationHealth, desiredPlan);
+  const unmergeableOpenCodeConfigPaths = new Set(collectUnmergeableOpenCodeConfigPaths(operationHealth));
+  const repairSkippedConfigWarnings = [...unmergeableOpenCodeConfigPaths].map(destinationPath => (
+    `Preserved user configuration ${destinationPath}: the existing file is not a JSON `
+    + 'object ECC can merge into. ECC no longer manages this file; apply future '
+    + 'configuration updates manually.'
+  ));
+  const filteredRepairOperations = repairOperations.filter(operation => (
+    !unmergeableOpenCodeConfigPaths.has(operation.destinationPath)
+  ));
+  const preserveDriftedPaths = [...new Set([
+    ...collectDriftedOpenCodeConfigPaths(record, operationHealth)
+      .filter(destinationPath => !unmergeableOpenCodeConfigPaths.has(destinationPath)),
+    ...unmergeableOpenCodeConfigPaths,
+  ])];
   const repairLinkIndex = buildLinkIndexForOperations(desiredPlan.operations, record.targetRoot);
   const legacyMigrationPaths = migration.legacyOperationsToRemove.map(
     operation => operation.destinationPath
   );
   const plannedRepairs = [...new Set([
     ...(needsOpencodeBuild ? [opencodeBuildRepairPath] : []),
-    ...repairOperations.map(operation => operation.destinationPath),
+    ...filteredRepairOperations.map(operation => operation.destinationPath),
     ...legacyMigrationPaths,
   ])];
 
@@ -1778,8 +1961,10 @@ function repairManagedRecord(repair, build) {
     desiredPlan,
     migration,
     activationSnapshot,
-    repairOperations,
+    repairOperations: filteredRepairOperations,
     repairLinkIndex,
+    preserveDriftedPaths,
+    repairSkippedConfigWarnings,
   });
 }
 

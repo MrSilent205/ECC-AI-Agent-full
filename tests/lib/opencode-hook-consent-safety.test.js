@@ -295,7 +295,7 @@ function runTests() {
   }));
   for (const consent of [null, 'declined']) {
     for (const plugin of [undefined, ['user-plugin']]) {
-      test(`fresh ${consent || 'default'} apply preserves inactive user config ${JSON.stringify(plugin)}`, () => fixture(value => {
+      test(`fresh ${consent || 'default'} apply merges into inactive user config ${JSON.stringify(plugin)}`, () => fixture(value => {
         fs.unlinkSync(value.installStatePath);
         fs.unlinkSync(path.join(value.targetRoot, 'plugins/ecc-hooks.ts'));
         const destination = path.join(value.targetRoot, 'opencode.json');
@@ -303,11 +303,21 @@ function runTests() {
         fs.writeFileSync(destination, content);
         const result = applyInstallPlan(withHookConsent(value.basePlan, consent));
         assert.strictEqual(result.applied, true);
-        assert.strictEqual(fs.readFileSync(destination, 'utf8'), content);
-        assert.ok(result.warnings.includes(`Skipped user-owned file ${destination}: the existing file is not recorded in ECC install-state.`));
-        assert.ok(result.skippedOperations.some(operation => operation.destinationPath === destination));
+        // #3559: an unrecorded config that activates nothing is merged, not
+        // skipped: user keys survive unless the template owns the key, user
+        // plugin registrations persist, and no activation machinery is added.
+        const merged = JSON.parse(fs.readFileSync(destination, 'utf8'));
+        assert.strictEqual(merged.userSetting, true,
+          'template keys win conflicts, matching the shared merge-json semantics');
+        assert.deepStrictEqual(merged.plugin, plugin,
+          'user plugin entries must survive; an empty union must omit the key');
+        assert.ok(result.warnings.some(warning => warning.startsWith(`Merged ECC configuration into existing file ${destination}`)));
+        assert.ok(result.skippedOperations.every(operation => operation.destinationPath !== destination),
+          'The config is merged instead of skipped');
         for (const operations of [result.operations, readInstallState(value.installStatePath).operations]) {
-          assert.ok(!operations.some(operation => operation.destinationPath === destination), 'Do not adopt a user config');
+          const recorded = operations.find(operation => operation.destinationPath === destination);
+          assert.ok(recorded, 'The merge is recorded so repair/uninstall stay reversible');
+          assert.strictEqual(recorded.previousContent, content, 'The pre-merge content is snapshotted');
         }
         assert.strictEqual(fs.readFileSync(path.join(value.targetRoot, 'plugins/ecc-hooks.ts'), 'utf8'),
           'export default async () => ({});\n');
@@ -325,12 +335,13 @@ function runTests() {
       assert.strictEqual(fs.existsSync(value.installStatePath), false);
       assert.strictEqual(fs.existsSync(`${value.installStatePath}.ecc.lock`), false);
     }));
-    test(`fresh ${consent || 'default'} apply rechecks skipped user config after writes`, () => fixture(value => {
+    test(`fresh ${consent || 'default'} apply rechecks merged user config after writes`, () => fixture(value => {
       fs.unlinkSync(value.installStatePath);
       const plugin = path.join(value.targetRoot, 'plugins/ecc-hooks.ts');
       fs.unlinkSync(plugin);
       const destination = path.join(value.targetRoot, 'opencode.json');
-      fs.writeFileSync(destination, '{"userSetting":"initially inactive"}\n');
+      const initialContent = '{"userSetting":"initially inactive"}\n';
+      fs.writeFileSync(destination, initialContent);
       const activated = '{"plugin":["./plugins"],"userSetting":"late edit"}\n';
       let injected = false;
       const stateWritePhases = [];
@@ -343,15 +354,22 @@ function runTests() {
           }
         },
       }), /OpenCode hook activation remains active/);
-      assert.ok(injected, 'Exercise the write boundary after preserving the inactive config');
+      assert.ok(injected, 'Exercise the write boundary after merging the inactive config');
       assert.strictEqual(fs.readFileSync(destination, 'utf8'), activated);
       assert.ok(!stateWritePhases.includes(true), 'Do not reach final state persistence');
-      // A retryable bridge may record the inert plugin already written, but
-      // must never adopt the preserved user config after this refusal.
+      // A retryable bridge may record the merged config and the inert plugin
+      // already written, but only with the pre-merge snapshot: the user's
+      // original bytes stay restorable and the late activation is never
+      // adopted by final state.
       const checkpoint = readInstallState(value.installStatePath);
-      assert.deepStrictEqual(checkpoint.operations.map(operation => operation.destinationPath), [plugin]);
+      assert.deepStrictEqual(checkpoint.operations.map(operation => operation.destinationPath),
+        [destination, plugin]);
+      const configOperation = checkpoint.operations.find(operation => operation.destinationPath === destination);
+      assert.strictEqual(configOperation.previousContent, initialContent,
+        'The checkpoint keeps the pre-merge snapshot, not the activated bytes');
       assert.strictEqual(fs.readFileSync(plugin, 'utf8'), 'export default async () => ({});\n');
-      assert.strictEqual(checkpoint.operations[0].contentSha256, sha256(fs.readFileSync(plugin)));
+      const pluginOperation = checkpoint.operations.find(operation => operation.destinationPath === plugin);
+      assert.strictEqual(pluginOperation.contentSha256, sha256(fs.readFileSync(plugin)));
       assert.strictEqual(fs.existsSync(`${value.installStatePath}.ecc.lock`), false);
     }));
     test(`fresh ${consent || 'default'} apply preserves unrelated unrecorded plugin aliases`, () => fixture(value => {

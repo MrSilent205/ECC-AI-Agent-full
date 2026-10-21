@@ -1,10 +1,17 @@
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 const { readInstallState } = require('../install-state');
 const { hasEditedCodexUserConfig } = require('./codex-user-config');
+const {
+  isOpenCodeConfigTemplateOperation,
+  parseJsonObjectContent,
+  readExistingConfigContent,
+  refreshOpenCodeConfigSnapshot,
+} = require('./opencode-config-merge');
 
 function pathExists(filePath) {
   try {
@@ -24,6 +31,28 @@ function comparablePath(filePath) {
 }
 
 /**
+ * #3559: ECC's own OpenCode config template is a managed copy-file operation
+ * whose destination is the user's live `opencode.json`. Dropping the whole
+ * template (the #2964 behavior below) leaves the install without agents,
+ * commands or skills paths, so for this one mergeable JSON config the guard
+ * instead plans a merge: the template keys are combined into the existing
+ * document, the user's keys stay untouched, and the pre-merge content is
+ * recorded on the operation (previousContent) so uninstall can restore it.
+ * Returns null whenever the existing file is not a JSON object ECC can merge
+ * into; those files keep full #2964 skip treatment.
+ */
+function prepareExistingConfigMerge(operation) {
+  if (!isOpenCodeConfigTemplateOperation(operation) || !operation.sourcePath) {
+    return null;
+  }
+  const existingContent = readExistingConfigContent(operation.destinationPath);
+  if (existingContent === null || parseJsonObjectContent(existingContent) === null) {
+    return null;
+  }
+  return { ...operation, previousContent: existingContent };
+}
+
+/**
  * #2964: the shared copy path used to write every copy-file operation
  * unconditionally and record the destination as `ownership: 'managed'` even
  * when the file already existed and was authored by the user. The visible
@@ -37,6 +66,44 @@ function comparablePath(filePath) {
  *
  * All managed targets share this ownership boundary (#2964).
  */
+/**
+ * Decides per planned/retained operation whether the #2964 skip applies,
+ * an existing OpenCode config is merged into instead (#3559), or the
+ * operation passes through untouched. Returns destination-keyed decisions so
+ * the caller can rewrite the migration without relying on object identity.
+ */
+function classifyUnrecordedFileConflicts(plan, plannedOperations, retainedOperations, managedDestinations, previousManagedOperations) {
+  const skippedOperations = [];
+  const warnings = [];
+  const mergedOperations = new Map();
+  for (const operation of [...plannedOperations, ...retainedOperations]) {
+    const previousOperation = previousManagedOperations.get(comparablePath(operation.destinationPath));
+    const editedConfig = previousOperation
+      && hasEditedCodexUserConfig(plan, operation, previousOperation);
+    const conflictsWithUnrecordedFile = Boolean(
+      operation
+      && operation.kind === 'copy-file'
+      && operation.destinationPath
+      && pathExists(operation.destinationPath)
+      && (!managedDestinations.has(comparablePath(operation.destinationPath)) || editedConfig)
+    );
+    if (conflictsWithUnrecordedFile && isOpenCodeConfigTemplateOperation(operation)) {
+      const mergedOperation = prepareExistingConfigMerge(operation);
+      if (mergedOperation) {
+        mergedOperations.set(comparablePath(operation.destinationPath), mergedOperation);
+        continue;
+      }
+    }
+    if (conflictsWithUnrecordedFile) {
+      skippedOperations.push(operation);
+      warnings.push(editedConfig
+        ? `Preserved user configuration ${operation.destinationPath}: changed or unverifiable since installation. ECC no longer manages this file; apply future configuration updates manually.`
+        : `Skipped user-owned file ${operation.destinationPath}: the existing file is not recorded in ECC install-state.`);
+    }
+  }
+  return { skippedOperations, warnings, mergedOperations };
+}
+
 function prepareUserOwnedFileGuard(plan, migration, recordedState) {
   const previousState = recordedState === undefined
     ? (pathExists(plan.installStatePath) ? readInstallState(plan.installStatePath) : null)
@@ -68,43 +135,106 @@ function prepareUserOwnedFileGuard(plan, migration, recordedState) {
   const retainedOperations = ((migration.finalState && migration.finalState.operations) || [])
     .filter(operation => !plannedDestinations.has(comparablePath(operation.destinationPath))
       && previousManagedOperations.has(comparablePath(operation.destinationPath)));
-  const skippedOperations = [];
-  const warnings = [];
-  for (const operation of [...plannedOperations, ...retainedOperations]) {
-    const previousOperation = previousManagedOperations.get(comparablePath(operation.destinationPath));
-    const editedConfig = previousOperation
-      && hasEditedCodexUserConfig(plan, operation, previousOperation);
-    if (
-      operation
-      && operation.kind === 'copy-file'
-      && operation.destinationPath
-      && pathExists(operation.destinationPath)
-      && (!managedDestinations.has(comparablePath(operation.destinationPath)) || editedConfig)
-    ) {
-      skippedOperations.push(operation);
-      warnings.push(editedConfig
-        ? `Preserved user configuration ${operation.destinationPath}: changed or unverifiable since installation. ECC no longer manages this file; apply future configuration updates manually.`
-        : `Skipped user-owned file ${operation.destinationPath}: the existing file is not recorded in ECC install-state.`);
-      continue;
-    }
-  }
+  const { skippedOperations, warnings, mergedOperations } = classifyUnrecordedFileConflicts(
+    plan,
+    plannedOperations,
+    retainedOperations,
+    managedDestinations,
+    previousManagedOperations
+  );
 
-  if (skippedOperations.length === 0) {
+  const replaceMerged = operations => (operations || []).map(operation => (
+    mergedOperations.get(comparablePath(operation.destinationPath)) || operation
+  ));
+  // A recorded config keeps the snapshot from the install that first merged
+  // into the user's document: uninstall must always be able to restore the
+  // pre-ECC content, not just after the initial merge (#3559).
+  // Lifecycle addition: when the live merged config drifted from the recorded
+  // install bytes since that install, the drift is user-owned (the projection
+  // strips ECC's template keys), so fold it into the snapshot — uninstall
+  // would otherwise restore the stale pre-merge document and silently drop
+  // the edits made between installs (maintainer-reported lifecycle case).
+  const refreshCarriedSnapshot = (operation, recorded) => {
+    if (typeof recorded.previousContent !== 'string'
+      || !/^[a-f0-9]{64}$/i.test(String(recorded.contentSha256 || ''))) {
+      return null;
+    }
+    const liveContent = readExistingConfigContent(operation.destinationPath);
+    if (liveContent === null) {
+      return null;
+    }
+    const liveDigest = crypto.createHash('sha256').update(liveContent).digest('hex');
+    if (liveDigest === recorded.contentSha256.toLowerCase()) {
+      // ECC's recorded write is intact; the snapshot is still current.
+      return null;
+    }
+    // Resolve the transformed template exactly as the apply path does so the
+    // projection strips the keys ECC actually installed. Any failure here is
+    // fail-safe: the original snapshot is kept.
+    let templateContent = null;
+    try {
+      const { transformInstallContent } = require('./content-transform');
+      templateContent = transformInstallContent(
+        operation,
+        fs.readFileSync(operation.sourcePath, 'utf8')
+      );
+    } catch (_error) {
+      return null;
+    }
+    return refreshOpenCodeConfigSnapshot(recorded.previousContent, liveContent, templateContent);
+  };
+  const withCarriedSnapshot = operations => (operations || []).map(operation => {
+    if (!isOpenCodeConfigTemplateOperation(operation)
+      || typeof operation.previousContent === 'string') {
+      return operation;
+    }
+    const recorded = previousManagedOperations.get(comparablePath(operation.destinationPath));
+    if (!recorded || typeof recorded.previousContent !== 'string') {
+      return operation;
+    }
+    const refreshedSnapshot = refreshCarriedSnapshot(operation, recorded);
+    return {
+      ...operation,
+      previousContent: refreshedSnapshot === null ? recorded.previousContent : refreshedSnapshot,
+    };
+  });
+  const carriesSnapshot = plannedOperations.some(operation => {
+    if (!isOpenCodeConfigTemplateOperation(operation)
+      || typeof operation.previousContent === 'string') {
+      return false;
+    }
+    const recorded = previousManagedOperations.get(comparablePath(operation.destinationPath));
+    return Boolean(recorded && typeof recorded.previousContent === 'string');
+  });
+
+  if (skippedOperations.length === 0 && mergedOperations.size === 0 && !carriesSnapshot) {
     return { ...migration, managedDestinations, previousManagedOperations };
   }
 
+  for (const [destinationKey, mergedOperation] of mergedOperations) {
+    // The merge claims ECC ownership of the combined document, so the write
+    // boundary must not refuse it as a user file that appeared after planning.
+    managedDestinations.add(destinationKey);
+    warnings.push(
+      `Merged ECC configuration into existing file ${mergedOperation.destinationPath}: `
+      + 'your existing keys are preserved and the previous content was recorded '
+      + 'so uninstall can restore it.'
+    );
+  }
   const skippedDestinations = new Set(
     skippedOperations.map(operation => comparablePath(operation.destinationPath))
   );
-  const appliedOperations = plannedOperations.filter(operation => (
+  const appliedOperations = withCarriedSnapshot(replaceMerged(plannedOperations)).filter(operation => (
     !skippedDestinations.has(comparablePath(operation.destinationPath))
   ));
-  const filterStateOperations = operations => (operations || [])
+  const filterStateOperations = operations => withCarriedSnapshot(replaceMerged(operations))
     .filter(operation => !skippedDestinations.has(comparablePath(operation.destinationPath)));
 
   // Never leave a skipped destination inside the install-state: recording it
   // would claim ownership of a file ECC did not create and make uninstall
-  // delete it (#2964).
+  // delete it (#2964). Merged destinations stay recorded with their
+  // previousContent snapshot so uninstall can restore the user's document
+  // (#3559).
   const bridgeState = migration.bridgeState
     ? {
       ...migration.bridgeState,
@@ -131,9 +261,11 @@ function prepareUserOwnedFileGuard(plan, migration, recordedState) {
     bridgeState,
     finalState,
     // Only keep bridge persistence when operations actually remain; a fully
-    // skipped plan installs nothing and must not claim anything.
-    requiresBridgeState: Boolean(migration.requiresBridgeState)
-      && appliedOperations.length > 0,
+    // skipped plan installs nothing and must not claim anything. Plans that
+    // were not filtered keep the migration's own bridge decision.
+    requiresBridgeState: skippedOperations.length > 0
+      ? Boolean(migration.requiresBridgeState) && appliedOperations.length > 0
+      : migration.requiresBridgeState,
   };
 }
 

@@ -58,6 +58,11 @@ const {
 } = require('./stale-operations-reconciliation');
 const { buildInstallIndex, rewriteRelativeLinks } = require('./link-rewrite');
 const { transformInstallContent } = require('./content-transform');
+const {
+  isOpenCodeConfigTemplateOperation,
+  mergedOpenCodeConfigMatchesDesiredState,
+  mergeOpenCodeConfigContent,
+} = require('./opencode-config-merge');
 const { assertScriptBoundary, isScriptBoundary } = require('./opencode-script-boundary');
 
 function isMarkdownPath(filePath) {
@@ -515,7 +520,31 @@ function assertOpenCodeHookDeactivationReady(plan, options = {}) {
     if (!replacement || replacement.kind !== 'copy-file'
       || replacement.contentTransform !== expectedTransform
       || !recorded || recorded.contentSha256 !== digest) {
-      throw new Error(`Refusing OpenCode hook deactivation: user-owned, modified, unverifiable or stale activation at ${operation.destinationPath}`);
+      // #3559: the config template destination is the user's live merged
+      // `opencode.json`, so its digest moves whenever the user edits one of
+      // their OWN keys. When the file is inactive and still matches the
+      // merged desired state — ECC's keys per the deactivated template, user
+      // keys arbitrary — the planned repair write is the content-preserving
+      // merge, and refusing it would turn every later repair into a
+      // permanent error. Still-active or ECC-key-diverged files stay refused.
+      const mergeSafeConfig = replacement
+        && replacement.kind === 'copy-file'
+        && recorded
+        && inactive
+        && isOpenCodeConfigTemplateOperation(replacement)
+        && (() => {
+          try {
+            return mergedOpenCodeConfigMatchesDesiredState(
+              content.toString('utf8'),
+              transformInstallContent(replacement, fs.readFileSync(replacement.sourcePath, 'utf8'))
+            );
+          } catch (_error) {
+            return false;
+          }
+        })();
+      if (!mergeSafeConfig) {
+        throw new Error(`Refusing OpenCode hook deactivation: user-owned, modified, unverifiable or stale activation at ${operation.destinationPath}`);
+      }
     }
   }
   return snapshot;
@@ -914,12 +943,32 @@ function applyInstallPlanLocked(plan, dependencies = {}, settingsLockHeld = fals
           operation,
           fs.readFileSync(operation.sourcePath, 'utf8')
         );
-        const installedContent = needsLinkRewrite
+        let installedContent = needsLinkRewrite
           ? rewriteRelativeLinks(transformed, {
             sourceRel: operation.sourceRelativePath,
             index: linkIndex,
           })
           : transformed;
+        // #3559: the OpenCode config template carries the user's live
+        // opencode.json. Merge the transformed template into the existing
+        // document instead of overwriting it, so user-owned keys survive
+        // installs, reinstalls and repairs. Destinations ECC has never
+        // recorded keep the user's own plugin registrations; recorded ones
+        // follow the template so hook deactivation can remove the
+        // './plugins' entry ECC itself wrote.
+        if (isOpenCodeConfigTemplateOperation(operation)) {
+          const existingRawContent = readInstalledFileNoFollow(appliedPlan, operation);
+          const mergedContent = existingRawContent === null
+            ? null
+            : mergeOpenCodeConfigContent(existingRawContent.toString('utf8'), installedContent, {
+              preserveUserPluginEntries: !migration.previousManagedOperations.has(
+                comparablePath(operation.destinationPath)
+              ),
+            });
+          if (mergedContent !== null) {
+            installedContent = mergedContent;
+          }
+        }
         const writeOptions = getOpenCodeActivationWriteOptions(operation, activationSnapshot);
         if (writeOptions.expectedContent) {
           writeFileNoFollow(operation.destinationPath, installedContent, {
