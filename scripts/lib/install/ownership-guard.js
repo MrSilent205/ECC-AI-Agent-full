@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -9,6 +10,7 @@ const {
   isOpenCodeConfigTemplateOperation,
   parseJsonObjectContent,
   readExistingConfigContent,
+  refreshOpenCodeConfigSnapshot,
 } = require('./opencode-config-merge');
 
 function pathExists(filePath) {
@@ -147,15 +149,54 @@ function prepareUserOwnedFileGuard(plan, migration, recordedState) {
   // A recorded config keeps the snapshot from the install that first merged
   // into the user's document: uninstall must always be able to restore the
   // pre-ECC content, not just after the initial merge (#3559).
+  // Lifecycle addition: when the live merged config drifted from the recorded
+  // install bytes since that install, the drift is user-owned (the projection
+  // strips ECC's template keys), so fold it into the snapshot — uninstall
+  // would otherwise restore the stale pre-merge document and silently drop
+  // the edits made between installs (maintainer-reported lifecycle case).
+  const refreshCarriedSnapshot = (operation, recorded) => {
+    if (typeof recorded.previousContent !== 'string'
+      || !/^[a-f0-9]{64}$/i.test(String(recorded.contentSha256 || ''))) {
+      return null;
+    }
+    const liveContent = readExistingConfigContent(operation.destinationPath);
+    if (liveContent === null) {
+      return null;
+    }
+    const liveDigest = crypto.createHash('sha256').update(liveContent).digest('hex');
+    if (liveDigest === recorded.contentSha256.toLowerCase()) {
+      // ECC's recorded write is intact; the snapshot is still current.
+      return null;
+    }
+    // Resolve the transformed template exactly as the apply path does so the
+    // projection strips the keys ECC actually installed. Any failure here is
+    // fail-safe: the original snapshot is kept.
+    let templateContent = null;
+    try {
+      const { transformInstallContent } = require('./content-transform');
+      templateContent = transformInstallContent(
+        operation,
+        fs.readFileSync(operation.sourcePath, 'utf8')
+      );
+    } catch (_error) {
+      return null;
+    }
+    return refreshOpenCodeConfigSnapshot(recorded.previousContent, liveContent, templateContent);
+  };
   const withCarriedSnapshot = operations => (operations || []).map(operation => {
     if (!isOpenCodeConfigTemplateOperation(operation)
       || typeof operation.previousContent === 'string') {
       return operation;
     }
     const recorded = previousManagedOperations.get(comparablePath(operation.destinationPath));
-    return recorded && typeof recorded.previousContent === 'string'
-      ? { ...operation, previousContent: recorded.previousContent }
-      : operation;
+    if (!recorded || typeof recorded.previousContent !== 'string') {
+      return operation;
+    }
+    const refreshedSnapshot = refreshCarriedSnapshot(operation, recorded);
+    return {
+      ...operation,
+      previousContent: refreshedSnapshot === null ? recorded.previousContent : refreshedSnapshot,
+    };
   });
   const carriesSnapshot = plannedOperations.some(operation => {
     if (!isOpenCodeConfigTemplateOperation(operation)

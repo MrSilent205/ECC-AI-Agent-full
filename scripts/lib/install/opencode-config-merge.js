@@ -125,10 +125,64 @@ function mergedOpenCodeConfigMatchesDesiredState(liveRawContent, expectedTemplat
   return isDeepStrictEqual(deepMergeJson(live, template), live);
 }
 
+// Recursively project the user-owned slice of a live merged config: values
+// that deep-equal the (transformed) template are ECC-owned and dropped, keys
+// the template does not define and values that diverged from it are kept.
+// The projection is empty when every live key still matches the template.
+function projectUserOwnedConfigKeys(liveValue, templateValue) {
+  const projection = {};
+  for (const [key, liveEntry] of Object.entries(liveValue)) {
+    if (!Object.prototype.hasOwnProperty.call(templateValue, key)) {
+      projection[key] = liveEntry;
+      continue;
+    }
+    const templateEntry = templateValue[key];
+    if (isPlainObject(liveEntry) && isPlainObject(templateEntry)) {
+      const nested = projectUserOwnedConfigKeys(liveEntry, templateEntry);
+      if (Object.keys(nested).length > 0) {
+        projection[key] = nested;
+      }
+      continue;
+    }
+    if (!isDeepStrictEqual(liveEntry, templateEntry)) {
+      projection[key] = liveEntry;
+    }
+  }
+  return projection;
+}
+
+// #3559 lifecycle: the recorded snapshot describes the user's document as it
+// was before the first merge. When a reinstall/repair re-merges into a
+// config that drifted from the recorded install bytes, the drift is
+// user-owned (ECC's installed template keys are stripped via the projection),
+// so the snapshot must absorb it — otherwise uninstall restores the stale
+// pre-merge document and silently drops the edits made between installs.
+// Returns the refreshed snapshot as formatted JSON, or null when no refresh
+// applies (recorded write intact, no user edits, or unparsable input — a
+// non-object live document is never folded into the snapshot).
+function refreshOpenCodeConfigSnapshot(snapshotRawContent, liveRawContent, templateRawContent) {
+  const snapshotValue = parseJsonObjectContent(snapshotRawContent);
+  const liveValue = parseJsonObjectContent(liveRawContent);
+  const templateValue = parseJsonObjectContent(templateRawContent);
+  if (snapshotValue === null || liveValue === null || templateValue === null) {
+    return null;
+  }
+  const projection = projectUserOwnedConfigKeys(
+    normalizeEmptyPluginKey(liveValue),
+    normalizeEmptyPluginKey(templateValue)
+  );
+  if (Object.keys(projection).length === 0) {
+    return null;
+  }
+  return formatJson(deepMergeJson(snapshotValue, projection));
+}
+
 module.exports = {
   isOpenCodeConfigTemplateOperation,
   mergedOpenCodeConfigMatchesDesiredState,
   mergeOpenCodeConfigContent,
   parseJsonObjectContent,
+  projectUserOwnedConfigKeys,
   readExistingConfigContent,
+  refreshOpenCodeConfigSnapshot,
 };

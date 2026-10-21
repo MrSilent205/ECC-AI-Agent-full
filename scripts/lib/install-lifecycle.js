@@ -689,16 +689,6 @@ function inspectionResult(status, operation, destinationPath, extra = {}) {
 }
 
 // #3559: the merged OpenCode config activates ECC's hooks by carrying the
-// './plugins' registration. A deactivating plan expects that registration to
-// be gone, so its presence means the transition has not happened yet — the
-// recorded digest proves ownership, not completion of that transition.
-function openCodeConfigStillActivatesHooks(liveRawContent) {
-  const liveValue = parseJsonObjectContent(liveRawContent);
-  return liveValue !== null
-    && Array.isArray(liveValue.plugin)
-    && liveValue.plugin.includes('./plugins');
-}
-
 // Compare installed bytes with what the recorded copy operation should have
 // written. Throws when either side cannot be read.
 function copyFileContentMatches(operation, inspectedPath, copySourcePath, linkIndex) {
@@ -1788,6 +1778,52 @@ function removeLegacyMigrationPaths(record, migration, repairedPaths) {
   }
 }
 
+// #3559: capture drift against the recorded ledger BEFORE any repair write:
+// reading the destination after the repair rewrote it would mistake the
+// write's own byte change (e.g. an intact deactivation transition) for
+// post-install user edits and wrongly preserve the stale digest. Pre-repair
+// bytes are the ground truth for "did the user edit this file since ECC last
+// wrote it".
+function collectDriftedOpenCodeConfigPaths(record, operationHealth) {
+  return operationHealth.drifted
+    .filter(entry => isOpenCodeConfigTemplateOperation(entry.operation))
+    .filter(entry => {
+      const recordedOperation = (record.state.operations || []).find(previous => (
+        previous.destinationPath
+        && path.relative(previous.destinationPath, entry.destinationPath) === ''
+      ));
+      if (!recordedOperation || !hasRecordedContentDigest(recordedOperation)) {
+        return true;
+      }
+      try {
+        return crypto.createHash('sha256')
+          .update(readFileNoFollow(entry.destinationPath))
+          .digest('hex') !== recordedOperation.contentSha256.toLowerCase();
+      } catch (_error) {
+        return true;
+      }
+    })
+    .map(entry => entry.destinationPath);
+}
+
+// #3559: a drifted merged config whose live content is not a JSON object
+// cannot be merged into — install-time treatment for such files is a full
+// skip, so repair must not fall back to a wholesale template write that
+// clobbers the user's document. Retain the file untouched and keep the
+// recorded ledger digest for it.
+function collectUnmergeableOpenCodeConfigPaths(operationHealth) {
+  return operationHealth.drifted
+    .filter(entry => isOpenCodeConfigTemplateOperation(entry.operation))
+    .filter(entry => {
+      try {
+        return parseJsonObjectContent(readFileNoFollow(entry.destinationPath, 'utf8')) === null;
+      } catch (_error) {
+        return true;
+      }
+    })
+    .map(entry => entry.destinationPath);
+}
+
 function applyRecordRepairs(repair, build, plan) {
   const { record } = repair;
   const { needsOpencodeBuild, opencodeBuildRepairPath } = build;
@@ -1824,7 +1860,20 @@ function applyRecordRepairs(repair, build, plan) {
         source: { ...record.state.source },
       };
   assertOpenCodeRepairHookDeactivation(desiredPlan, { requireInactive: true });
-  writeRefreshedInstallState(record, statePreviewToWrite, repairedPaths);
+  // #3559: for drifted merged configs whose pre-repair bytes were NOT the
+  // recorded install bytes, the merge write preserves the user's edits, so
+  // the ledger keeps the pre-repair digest: refreshing it would let
+  // uninstall restore the stale pre-merge snapshot over them. Transition
+  // writes (digest still matching, hooks deactivating) keep refreshing — the
+  // user's pre-install snapshot remains the right uninstall target.
+  // Unmergeable (non-object) configs keep their recorded digest so the
+  // untouched file is never claimed.
+  writeRefreshedInstallState(
+    record,
+    statePreviewToWrite,
+    repairedPaths,
+    plan.preserveDriftedPaths || []
+  );
 
   return {
     adapter: record.adapter,
@@ -1833,7 +1882,7 @@ function applyRecordRepairs(repair, build, plan) {
     repairedPaths,
     plannedRepairs: [],
     stateRefreshed: true,
-    warnings: desiredPlan.warnings,
+    warnings: [...desiredPlan.warnings, ...(plan.repairSkippedConfigWarnings || [])],
     error: null
   };
 }
@@ -1871,13 +1920,27 @@ function repairManagedRecord(repair, build) {
   }
 
   const repairOperations = collectRepairOperations(operationHealth, desiredPlan);
+  const unmergeableOpenCodeConfigPaths = new Set(collectUnmergeableOpenCodeConfigPaths(operationHealth));
+  const repairSkippedConfigWarnings = [...unmergeableOpenCodeConfigPaths].map(destinationPath => (
+    `Preserved user configuration ${destinationPath}: the existing file is not a JSON `
+    + 'object ECC can merge into. ECC no longer manages this file; apply future '
+    + 'configuration updates manually.'
+  ));
+  const filteredRepairOperations = repairOperations.filter(operation => (
+    !unmergeableOpenCodeConfigPaths.has(operation.destinationPath)
+  ));
+  const preserveDriftedPaths = [...new Set([
+    ...collectDriftedOpenCodeConfigPaths(record, operationHealth)
+      .filter(destinationPath => !unmergeableOpenCodeConfigPaths.has(destinationPath)),
+    ...unmergeableOpenCodeConfigPaths,
+  ])];
   const repairLinkIndex = buildLinkIndexForOperations(desiredPlan.operations, record.targetRoot);
   const legacyMigrationPaths = migration.legacyOperationsToRemove.map(
     operation => operation.destinationPath
   );
   const plannedRepairs = [...new Set([
     ...(needsOpencodeBuild ? [opencodeBuildRepairPath] : []),
-    ...repairOperations.map(operation => operation.destinationPath),
+    ...filteredRepairOperations.map(operation => operation.destinationPath),
     ...legacyMigrationPaths,
   ])];
 
@@ -1898,8 +1961,10 @@ function repairManagedRecord(repair, build) {
     desiredPlan,
     migration,
     activationSnapshot,
-    repairOperations,
+    repairOperations: filteredRepairOperations,
     repairLinkIndex,
+    preserveDriftedPaths,
+    repairSkippedConfigWarnings,
   });
 }
 

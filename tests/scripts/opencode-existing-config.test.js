@@ -69,12 +69,13 @@ const USER_CONFIG = {
 // platform-configs keeps the hook runtime out of the plan, so the OpenCode
 // activation operations carry their disabled transforms and no consent gate
 // applies (same approach as tests/scripts/ownership-guard.test.js).
-function createOpencodePlan(context) {
+function createOpencodePlan(context, overrides = {}) {
   return createManifestInstallPlan({
     ...context,
     target: 'opencode',
     moduleIds: ['platform-configs'],
     exemptValidationCodes: ['opencode-plugin-not-built'],
+    ...overrides,
   });
 }
 
@@ -304,6 +305,117 @@ test('uninstall keeps user edits after a repair rewrote a drifted merged config'
   assert.strictEqual(readConfig(operation.destinationPath).model, 'user/edited-after-install',
     'uninstall must not treat the repaired merged config as installer-owned bytes and restore stale content');
   assert.ok(readConfig(operation.destinationPath).mcp, 'user keys must remain after uninstall');
+});
+
+test('uninstall after a reinstall keeps the user edits made between installs', context => {
+  // Maintainer-reported lifecycle: install → user edit → reinstall →
+  // uninstall must keep the edited `model`. The reinstall refreshes the
+  // recorded digest to the re-merged bytes, so uninstall sees an "intact"
+  // write and would restore the stale pre-merge snapshot unless the ledger
+  // snapshot absorbs the user edits made between installs.
+  const plan = createOpencodePlan(context);
+  const operation = findConfigOperation(plan);
+  writeUserConfig(operation.destinationPath);
+  applyInstallPlan(plan);
+
+  const edited = readConfig(operation.destinationPath);
+  edited.model = 'user/edited-between-installs';
+  fs.writeFileSync(operation.destinationPath, `${JSON.stringify(edited, null, 2)}\n`);
+
+  applyInstallPlan(plan);
+  assert.strictEqual(readConfig(operation.destinationPath).model, 'user/edited-between-installs',
+    'reinstall must keep the user edit');
+
+  const result = uninstallInstalledStates({ ...context, targets: ['opencode'] });
+  assert.strictEqual(result.summary.errorCount, 0);
+  const finalConfig = readConfig(operation.destinationPath);
+  assert.strictEqual(finalConfig.model, 'user/edited-between-installs',
+    'uninstall must preserve the edit made between the two installs');
+  assert.ok(finalConfig.agent && finalConfig.agent['user-agent'],
+    'the restored document keeps the user-owned keys');
+  assert.ok(!(finalConfig.agent && finalConfig.agent.planner),
+    'the restored document is the pre-ECC user config, not the merged one');
+  assert.ok(!fs.existsSync(plan.installStatePath));
+});
+
+test('repair refuses to overwrite a merged config that is no longer a JSON object', context => {
+  const { repairInstalledStates } = require('../../scripts/lib/install-lifecycle');
+  // Selecting hooks-runtime with enabled consent keeps the deactivating
+  // transform out of the plan, so the repair reaches the health-driven
+  // repair path instead of the fail-closed deactivation preflight.
+  const { withHookConsent } = require('../../scripts/lib/install/hook-consent');
+  const plan = withHookConsent(createOpencodePlan(context, {
+    moduleIds: ['platform-configs', 'hooks-runtime'],
+  }), 'enabled');
+  const operation = findConfigOperation(plan);
+  writeUserConfig(operation.destinationPath);
+  applyInstallPlan(plan);
+  assert.deepStrictEqual(readConfig(operation.destinationPath).plugin, ['./plugins'],
+    'precondition: the merged config activates the ECC hooks');
+
+  // The user replaced the config with a malformed document after the merge.
+  // Install-time treatment for such files is a full skip, so repair must
+  // retain the bytes instead of clobbering them with the template.
+  fs.writeFileSync(operation.destinationPath, '{ broken user document\n');
+
+  const result = repairInstalledStates({ ...context, targets: ['opencode'] });
+  assert.strictEqual(result.summary.errorCount, 0);
+  assert.strictEqual(fs.readFileSync(operation.destinationPath, 'utf8'),
+    '{ broken user document\n',
+    'repair must not overwrite a non-object config with the template');
+  assert.ok(result.results[0].warnings.some(warning => warning.includes('not a JSON')),
+    'repair must report the retained config');
+
+  const uninstallResult = uninstallInstalledStates({ ...context, targets: ['opencode'] });
+  assert.strictEqual(uninstallResult.summary.errorCount, 0);
+  assert.strictEqual(fs.readFileSync(operation.destinationPath, 'utf8'),
+    '{ broken user document\n',
+    'uninstall must retain a config the ledger can no longer verify');
+});
+
+test('an intact deactivation transition refreshes the digest and uninstall restores the original bytes', context => {
+  const crypto = require('crypto');
+  const { repairInstalledStates } = require('../../scripts/lib/install-lifecycle');
+  const plan = createOpencodePlan(context);
+  const operation = findConfigOperation(plan);
+  writeUserConfig(operation.destinationPath);
+  applyInstallPlan(plan);
+
+  // Simulate an install that recorded the still-active merged config while
+  // the recorded consent plans the deactivating transform: repair must treat
+  // the intact file as a transition, refresh the ledger digest to the
+  // deactivated bytes, and uninstall must then restore the pre-merge user
+  // content — the drift marker must be captured before the repair write, not
+  // from the bytes the repair itself produced.
+  const activeContent = fs.readFileSync(operation.destinationPath, 'utf8');
+  const activeConfig = JSON.parse(activeContent);
+  activeConfig.plugin = ['./plugins'];
+  const activeRaw = `${JSON.stringify(activeConfig, null, 2)}\n`;
+  fs.writeFileSync(operation.destinationPath, activeRaw);
+  const state = readState(plan);
+  const recorded = state.operations.find(item => item.destinationPath === operation.destinationPath);
+  recorded.contentSha256 = crypto.createHash('sha256').update(activeRaw).digest('hex');
+  fs.writeFileSync(plan.installStatePath, `${JSON.stringify(state, null, 2)}\n`);
+
+  const result = repairInstalledStates({ ...context, targets: ['opencode'] });
+  assert.strictEqual(result.summary.errorCount, 0);
+  assert.strictEqual(result.results[0].status, 'repaired',
+    'a still-activating config under a deactivating plan is drift repair must fix');
+  const deactivated = readConfig(operation.destinationPath);
+  assert.deepStrictEqual(deactivated.plugin, [],
+    'repair must deactivate the hook registration');
+
+  const refreshedState = readState(plan);
+  const refreshed = refreshedState.operations.find(item => item.destinationPath === operation.destinationPath);
+  assert.strictEqual(refreshed.contentSha256,
+    crypto.createHash('sha256').update(fs.readFileSync(operation.destinationPath, 'utf8')).digest('hex'),
+    'an intact transition must refresh the recorded digest');
+
+  const uninstallResult = uninstallInstalledStates({ ...context, targets: ['opencode'] });
+  assert.strictEqual(uninstallResult.summary.errorCount, 0);
+  assert.strictEqual(fs.readFileSync(operation.destinationPath, 'utf8'),
+    `${JSON.stringify(USER_CONFIG, null, 2)}\n`,
+    'uninstall must restore the original pre-merge user content after the transition');
 });
 
 console.log(`Results: Passed: ${passed}, Failed: ${failed}`);
