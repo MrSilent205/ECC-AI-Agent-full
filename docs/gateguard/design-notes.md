@@ -176,9 +176,9 @@ for existing configurations. The precedence is documented in the skill's
 order of checks, and the table row warns that exemptions apply to sensitive
 and hard-linked targets too.
 
-An exemption covers the path as written and its real location, not wherever
-a symlink points: the target's symlink-resolved path (for a new file, the real
-path of its nearest existing ancestor) must also match an exempt glob, judged
+An exemption requires both the path as written and its symlink-resolved
+location (for a new file, the real path of its nearest existing ancestor) to
+match an exempt glob. The resolved location is judged
 against the project root's real path for relative globs and, for absolute
 globs, against the glob with its literal leading directories resolved (`/tmp`
 is `/private/tmp` on macOS). Otherwise a link in an exempt scratch directory

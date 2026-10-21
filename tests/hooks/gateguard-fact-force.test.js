@@ -3969,11 +3969,18 @@ function runTests() {
   })();
   const exemptLinkRun = (tool, toolInput, glob, root = exemptLinkRoot) => {
     clearState();
-    const output = parseOutput(runHook(
+    const result = runHook(
       { cwd: root, tool_name: tool, tool_input: toolInput },
       { GATEGUARD_EXEMPT_GLOBS: glob, CLAUDE_PROJECT_DIR: root }
-    ).stdout);
-    return output && output.hookSpecificOutput ? output.hookSpecificOutput.permissionDecision : undefined;
+    );
+    assert.strictEqual(result.code, 0, result.stderr);
+    const output = parseOutput(result.stdout);
+    assert.ok(output && typeof output === 'object', `hook output must be JSON: ${result.stdout}`);
+    if (!output.hookSpecificOutput) {
+      assert.strictEqual(output.tool_name, tool, 'a pass-through must echo the tool input');
+      return undefined;
+    }
+    return output.hookSpecificOutput.permissionDecision;
   };
   const exemptLinkCase = (name, fn) => {
     if (test(name, () => {
@@ -4013,7 +4020,7 @@ function runTests() {
   exemptLinkCase('a project reached through a symlinked parent keeps relative and absolute exemptions', () => {
     const aliasRoot = path.join(exemptLinkBase, 'alias', 'proj');
     const plain = path.join(aliasRoot, 'scratch', 'notes.md');
-    for (const glob of ['scratch/**', `${aliasRoot.replace(/\\/g, '/')}/scratch/**`, `${exemptLinkBase.replace(/\\/g, '/')}/alias/*/scratch/**`]) {
+    for (const glob of ['scratch/**', `${aliasRoot.replace(/\\/g, '/')}/scratch/**`, `${exemptLinkBase.replace(/\\/g, '/')}/alias/*/scratch/**`, `${exemptLinkBase.replace(/\\/g, '/')}/alias/*/SCRATCH/**`]) {
       assert.strictEqual(exemptLinkRun('Edit', { file_path: plain, old_string: 'a', new_string: 'b' }, glob, aliasRoot), undefined, glob);
       assert.strictEqual(exemptLinkRun('Edit', { file_path: path.join(aliasRoot, 'scratch', 'link.md'), old_string: 'a', new_string: 'b' }, glob, aliasRoot), 'deny', glob);
     }

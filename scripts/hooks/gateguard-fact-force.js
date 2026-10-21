@@ -240,7 +240,7 @@ function realAbsoluteGlobRegex(glob, isWin) {
   const realPrefix = targetClass().realLocationOf(isWin ? prefix.replace(/\//g, '\\') : prefix, isWin);
   if (!realPrefix) return null;
   const rest = segments.slice(literal).join('/');
-  return exemptGlobRegex(`${normalizeForMatch(realPrefix).replace(/\/$/, '')}/${rest}`);
+  return exemptGlobRegex(normalizeForMatch(`${realPrefix.replace(/[\\/]$/, '')}/${rest}`));
 }
 
 // The path as written and its real location must both match: a symlink inside
