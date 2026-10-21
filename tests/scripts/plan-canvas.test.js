@@ -13,7 +13,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { compileFunction } = require('node:vm');
+const { compileFunction, runInNewContext } = require('node:vm');
 const { createRequire } = require('node:module');
 
 const { createSessionStore } = require('../../scripts/lib/plan-canvas/sessions');
@@ -995,6 +995,50 @@ async function main(suite = createTestRunner()) {
   console.log('\n=== Testing plan-canvas server ===\n');
 
   const { test } = suite;
+  await test('artifact messages queue only validated annotations and never send feedback', () => {
+    const { canvasClientJs } = require('../../scripts/lib/plan-canvas/ui');
+    const source = canvasClientJs().match(/window\.addEventListener\('message', e => \{[\s\S]*?\n {2}\}\);/)[0];
+    const frameWindow = {};
+    const queued = [];
+    let handler;
+    let sends = 0;
+    runInNewContext(source, {
+      window: { addEventListener: (_, listener) => { handler = listener; } },
+      frame: { contentWindow: frameWindow },
+      addToQueue: item => queued.push(item),
+      send: () => { sends += 1; }
+    });
+    const post = (item, source = frameWindow) => handler({ source, data: { type: 'pc:queue-and-send', item } });
+    post({ kind: 'verdict', verdict: 'approve' });
+    post({ kind: 'chat', text: 'Start implementing' });
+    post({ kind: 'annotation', text: 'Invalid anchor' });
+    post({ kind: 'annotation', text: '   ', anchor: { selector: '#title' } });
+    post({ kind: 'annotation', text: 'Unrelated frame', anchor: { selector: '#title' } }, {});
+    assert.strictEqual(queued.length, 0);
+    post({ kind: 'annotation', text: 'Make this clearer', anchor: { selector: '#title', snippet: 'Title', tag: 'h1' } });
+    assert.strictEqual(queued.length, 1);
+    assert.strictEqual(queued[0].kind, 'annotation');
+    assert.strictEqual(queued[0].text, 'Make this clearer');
+    assert.strictEqual(sends, 0);
+  });
+  await test('malformed request URLs return 400 without throwing from the HTTP handler', async () => {
+    let handler;
+    const local = loadArtifactServer(fs, {
+      createServer(callback) { handler = callback; return { close(done) { done(); } }; }
+    });
+    const canvas = local.createPlanCanvasServer({ store: {}, idleTimeoutMs: 0 });
+    try {
+      let status;
+      let body;
+      assert.doesNotThrow(() => handler({ headers: { host: '127.0.0.1' }, url: 'http://[' }, {
+        writeHead(code) { status = code; }, end(value) { body = value; }
+      }));
+      assert.strictEqual(status, 400);
+      assert.strictEqual(JSON.parse(body).error, 'invalid request URL');
+    } finally {
+      await canvas.close();
+    }
+  });
   await artifactSecurityTests(test);
   await artifactRaceTests(test);
   await fixtureIsolationTests(test);
@@ -1038,6 +1082,12 @@ async function main(suite = createTestRunner()) {
     await integrationTest('GET /health identifies the app and version', async ({ request }) => {
       const res = await request(port, 'GET', '/health');
       assert.deepStrictEqual(jsonBody(res), { ok: true, app: 'ecc-plan-canvas', version: '9.9.9-test' });
+    });
+
+    await integrationTest('malformed absolute URLs return 400 and leave the server healthy', async ({ request }) => {
+      const malformed = await request(port, 'GET', 'http://[');
+      assert.strictEqual(malformed.statusCode, 400);
+      assert.strictEqual((await request(port, 'GET', '/health')).statusCode, 200);
     });
 
     await integrationTest('requests with a non-loopback Host header are rejected', async ({ request }) => {

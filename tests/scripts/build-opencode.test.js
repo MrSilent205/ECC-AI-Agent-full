@@ -47,8 +47,8 @@ function checkRuntime(runtimeRoot, extension, loader, installedHome = false) {
         directory: process.cwd(),
         worktree: process.cwd(),
       })
-      assert.equal(typeof plugin["session.created"], "function")
-      await plugin["file.edited"]({ path: path.join(process.cwd(), "example.txt") })
+      assert.equal(typeof plugin.event, "function")
+      await plugin.event({ event: { type: "file.edited", properties: { file: path.join(process.cwd(), "example.txt") } } })
       const changed = JSON.parse(await tools.changedFiles.execute({ format: "json" }, {}))
       assert.equal(changed.changed, true)
       assert.deepEqual(changed.files, [{ path: "example.txt", changeType: "modified" }])
@@ -211,14 +211,9 @@ function main() {
           assert.strictEqual(shellCalls, 0, "$ must not be called during plugin init")
           assert.ok(plugin && typeof plugin === "object", "default export must return a plugin record")
           const expectedHooks = [
-            "file.edited",
+            "event",
             "tool.execute.after",
             "tool.execute.before",
-            "session.created",
-            "session.idle",
-            "session.deleted",
-            "file.watcher.updated",
-            "todo.updated",
             "shell.env",
             "experimental.session.compacting",
             "permission.ask",

@@ -15,6 +15,8 @@ Usage: node scripts/auto-update.js [--target <${SUPPORTED_INSTALL_TARGETS.join('
 
 Pull the latest ECC repo changes and reinstall the current context's managed targets
 using the original install-state request.
+Defaults to the running ECC checkout. --repo-root explicitly trusts another
+ECC checkout to supply and execute the installer.
 `);
   process.exit(exitCode);
 }
@@ -52,38 +54,9 @@ function parseArgs(argv) {
   return parsed;
 }
 
-function deriveRepoRootFromState(state) {
-  const operations = Array.isArray(state && state.operations) ? state.operations : [];
-
-  for (const operation of operations) {
-    if (typeof operation.sourcePath !== 'string' || !operation.sourcePath.trim()) {
-      continue;
-    }
-
-    if (typeof operation.sourceRelativePath !== 'string' || !operation.sourceRelativePath.trim()) {
-      continue;
-    }
-
-    const relativeParts = operation.sourceRelativePath.split(/[\\/]+/).filter(Boolean);
-
-    if (relativeParts.length === 0) {
-      continue;
-    }
-
-    let repoRoot = path.resolve(operation.sourcePath);
-    for (let index = 0; index < relativeParts.length; index += 1) {
-      repoRoot = path.dirname(repoRoot);
-    }
-
-    return repoRoot;
-  }
-
-  throw new Error('Unable to infer ECC repo root from install-state operations');
-}
-
 function buildInstallApplyArgs(record) {
   const state = record.state;
-  const target = state.target.target || record.adapter.target;
+  const target = record.adapter.target;
   const request = state.request || {};
   const args = [];
   const hookConsent = getRecordedHookConsent(state);
@@ -123,17 +96,14 @@ function buildInstallApplyArgs(record) {
 
 function determineInstallCwd(record, repoRoot) {
   if (record.adapter.kind === 'project') {
-    return path.dirname(record.state.target.root);
+    return path.dirname(record.targetRoot);
   }
 
   return repoRoot;
 }
 
-// Recognized ECC package names. A repo root is only trusted to run its
-// install-apply.js if its package.json identifies it as ECC — otherwise a
-// cloned project that ships a nested `evil/{package.json,scripts/install-apply.js}`
-// could drive auto-update into executing attacker code (GHSA-hfpv-w6mp-5g95).
-// 'everything-claude-code' is the legacy 1.x package name, kept for existing checkouts.
+// These checks identify the explicitly selected checkout's layout, not its trust.
+// Project install-state must never select executable code (GHSA-hfpv-w6mp-5g95).
 const ECC_PACKAGE_NAMES = new Set(['ecc-universal', 'everything-claude-code']);
 
 function validateRepoRoot(repoRoot) {
@@ -156,7 +126,7 @@ function validateRepoRoot(repoRoot) {
     throw new Error(`Invalid ECC repo root: unreadable package.json at ${packageJsonPath}`);
   }
   if (!ECC_PACKAGE_NAMES.has(pkgName)) {
-    throw new Error(`Refusing to run install from untrusted repo root ${normalized}: package.json name '${pkgName}' is not an official ECC package.`);
+    throw new Error(`Invalid ECC repo root ${normalized}: unsupported package.json name '${pkgName}'.`);
   }
 
   return normalized;
@@ -190,6 +160,11 @@ function legacyMigrationWarning(record) {
 }
 
 function runAutoUpdate(options = {}, dependencies = {}) {
+  const dryRunEnv = process.env.ECC_DRY_RUN;
+  if (dryRunEnv !== undefined && dryRunEnv !== '0' && dryRunEnv !== '1') {
+    throw new Error('ECC_DRY_RUN must be "1" or "0" when set');
+  }
+  const dryRun = Boolean(options.dryRun || dryRunEnv === '1');
   const discover = dependencies.discoverInstalledStates || discoverInstalledStates;
   const execute = dependencies.runExternalCommand || runExternalCommand;
   const homeDir = options.homeDir || process.env.HOME || os.homedir();
@@ -209,7 +184,7 @@ function runAutoUpdate(options = {}, dependencies = {}) {
   const results = [];
   if (records.length === 0) {
     return {
-      dryRun: Boolean(options.dryRun),
+      dryRun,
       repoRoot: requestedRepoRoot,
       results,
       warnings,
@@ -222,7 +197,6 @@ function runAutoUpdate(options = {}, dependencies = {}) {
   }
 
   const validRecords = [];
-  const inferredRepoRoots = [];
   for (const record of records) {
     if (record.error || !record.state) {
       results.push({
@@ -234,25 +208,13 @@ function runAutoUpdate(options = {}, dependencies = {}) {
       continue;
     }
 
-    const recordRepoRoot = requestedRepoRoot || validateRepoRoot(deriveRepoRootFromState(record.state));
-    inferredRepoRoots.push(recordRepoRoot);
-    validRecords.push({
-      record,
-      repoRoot: recordRepoRoot
-    });
+    validRecords.push({ record });
   }
 
-  if (!requestedRepoRoot) {
-    const uniqueRepoRoots = [...new Set(inferredRepoRoots)];
-    if (uniqueRepoRoots.length > 1) {
-      throw new Error(`Multiple ECC repo roots detected: ${uniqueRepoRoots.join(', ')}`);
-    }
-  }
-
-  const repoRoot = requestedRepoRoot || inferredRepoRoots[0] || null;
-  if (!repoRoot) {
+  const repoRoot = requestedRepoRoot || validateRepoRoot(path.join(__dirname, '..'));
+  if (validRecords.length === 0) {
     return {
-      dryRun: Boolean(options.dryRun),
+      dryRun,
       repoRoot,
       results,
       warnings,
@@ -270,7 +232,7 @@ function runAutoUpdate(options = {}, dependencies = {}) {
     USERPROFILE: homeDir
   };
 
-  if (!options.dryRun) {
+  if (!dryRun) {
     execute('git', ['fetch', '--all', '--prune'], { cwd: repoRoot, env });
     execute('git', ['pull', '--ff-only'], { cwd: repoRoot, env });
   }
@@ -279,7 +241,7 @@ function runAutoUpdate(options = {}, dependencies = {}) {
     const installArgs = buildInstallApplyArgs(entry.record);
     const args = [path.join(repoRoot, 'scripts', 'install-apply.js'), ...installArgs, '--json'];
 
-    if (options.dryRun) {
+    if (dryRun) {
       args.push('--dry-run');
     }
 
@@ -300,7 +262,7 @@ function runAutoUpdate(options = {}, dependencies = {}) {
         repoRoot,
         cwd: determineInstallCwd(entry.record, repoRoot),
         installArgs,
-        status: options.dryRun ? 'planned' : 'updated',
+        status: dryRun ? 'planned' : 'updated',
         payload
       });
     } catch (error) {
@@ -316,7 +278,7 @@ function runAutoUpdate(options = {}, dependencies = {}) {
   }
 
   return {
-    dryRun: Boolean(options.dryRun),
+    dryRun,
     repoRoot,
     results,
     warnings,
@@ -394,7 +356,6 @@ if (require.main === module) {
 
 module.exports = {
   parseArgs,
-  deriveRepoRootFromState,
   buildInstallApplyArgs,
   determineInstallCwd,
   runAutoUpdate

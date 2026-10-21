@@ -666,7 +666,12 @@ function createPlanCanvasServer({
     if (!isAllowedOrigin(req.headers.origin, allowedHostnames)) {
       return sendJson(res, 403, { error: 'forbidden origin' });
     }
-    const url = new URL(req.url, `http://${req.headers.host}`);
+    let url;
+    try {
+      url = new URL(req.url, `http://${req.headers.host}`);
+    } catch {
+      return sendJson(res, 400, { error: 'invalid request URL' });
+    }
     const { pathname } = url;
 
     Promise.resolve()

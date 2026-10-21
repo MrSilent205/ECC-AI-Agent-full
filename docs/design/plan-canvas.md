@@ -27,6 +27,8 @@ A loopback-only web editor for plan artifacts (and any local HTML artifact):
   and chats with the agent from a side rail.
 - Plan-specific verdict actions — **Approve plan** / **Request changes** — map directly onto
   `/plan`'s CONFIRM gate, so approval can happen from the canvas instead of the terminal.
+- Artifact scripts may queue bounded annotations, but sending feedback and choosing a verdict
+  require an action in the review panel. Messages from the artifact cannot approve a plan.
 - The agent blocks on `node scripts/plan-canvas.js await <artifact>` (long poll). Feedback
   arrives as JSON on stdout: chat messages, annotations with CSS-selector + text-range
   anchors, verdicts, or session-end.

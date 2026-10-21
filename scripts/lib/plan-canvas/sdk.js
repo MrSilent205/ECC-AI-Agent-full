@@ -55,7 +55,7 @@ function artifactSdkJs() {
       <button class="cancel" type="button">Cancel</button>
       <button class="queue" type="button">Queue</button>
     </div>
-    <div class="keys">Enter to queue &middot; Cmd/Ctrl+Enter to queue &amp; send</div>
+    <div class="keys">Enter to queue &middot; Send feedback from the review panel</div>
   </div>\`;
   const attach = () => document.body ? document.body.appendChild(host) : null;
   if (document.body) attach();
@@ -116,21 +116,20 @@ function artifactSdkJs() {
     card = null;
     cardEl.style.display = 'none';
   }
-  function queueCard(sendNow) {
+  function queueCard() {
     if (!card) return;
     const text = cardText.value.trim();
     if (!text) { cardText.focus(); return; }
     post({
-      type: sendNow ? 'pc:queue-and-send' : 'pc:queue',
+      type: 'pc:queue',
       item: { kind: 'annotation', text, anchor: card.anchor }
     });
     closeCard();
   }
   cardEl.querySelector('.cancel').addEventListener('click', closeCard);
-  cardEl.querySelector('.queue').addEventListener('click', () => queueCard(false));
+  cardEl.querySelector('.queue').addEventListener('click', () => queueCard());
   cardText.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); queueCard(true); }
-    else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); queueCard(false); }
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || !e.shiftKey)) { e.preventDefault(); queueCard(); }
     else if (e.key === 'Escape') closeCard();
   });
 

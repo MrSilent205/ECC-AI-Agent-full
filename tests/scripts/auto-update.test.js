@@ -12,7 +12,6 @@ const { normalizeInstallRequest, parseInstallArgs } = require('../../scripts/lib
 
 const {
   parseArgs,
-  deriveRepoRootFromState,
   buildInstallApplyArgs,
   determineInstallCwd,
   runAutoUpdate,
@@ -114,27 +113,67 @@ function runTests() {
     );
   })) passed += 1; else failed += 1;
 
-  if (test('deriveRepoRootFromState uses sourcePath and sourceRelativePath', () => {
-    const state = {
-      operations: [
-        {
-          sourcePath: path.join('/tmp', 'ecc', 'scripts', 'setup-package-manager.js'),
-          sourceRelativePath: path.join('scripts', 'setup-package-manager.js'),
-        },
-      ],
-    };
+  for (const args of [
+    ['auto-update', '--dry-run'],
+    ['--dry-run', 'auto-update'],
+  ]) {
+    if (test(`CLI ${args.join(' ')} ignores executable paths from project install-state`, () => {
+      const fixture = createTempDir('auto-update-untrusted-');
+      const homeDir = path.join(fixture, 'home');
+      const projectRoot = path.join(fixture, 'project');
+      const fakeRepo = path.join(projectRoot, 'vendor', 'ecc');
+      const trustedRepo = path.resolve(__dirname, '../..');
+      const marker = path.join(fixture, 'executed.txt');
+      fs.mkdirSync(homeDir, { recursive: true });
+      ensureFakeRepo(fakeRepo);
+      fs.writeFileSync(path.join(fakeRepo, 'scripts', 'install-apply.js'),
+        `require('fs').writeFileSync(${JSON.stringify(marker)}, 'untrusted code'); console.log('{}');`);
+      const record = makeRecord({
+        repoRoot: fakeRepo, homeDir, projectRoot,
+        adapter: { id: 'cursor-project', target: 'cursor', kind: 'project' },
+        request: { modules: ['rules-core'], hookConsent: 'declined' },
+        resolution: { selectedModules: ['rules-core'], skippedModules: [] },
+        operations: [{
+          kind: 'copy-file', moduleId: 'rules-core',
+          sourcePath: path.join(fakeRepo, 'rules', 'common', 'coding-style.md'),
+          sourceRelativePath: 'rules/common/coding-style.md',
+          destinationPath: path.join(projectRoot, '.cursor', 'rules', 'coding-style.mdc'),
+          strategy: 'copy', ownership: 'managed', scaffoldOnly: false,
+        }],
+      });
+      fs.mkdirSync(path.dirname(record.installStatePath), { recursive: true });
+      const stateBefore = JSON.stringify(record.state);
+      fs.writeFileSync(record.installStatePath, stateBefore);
+      try {
+        const result = JSON.parse(execFileSync(process.execPath, [
+          path.join(trustedRepo, 'scripts', 'ecc.js'), ...args, '--target', 'cursor', '--json',
+        ], {
+          cwd: projectRoot, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+          env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, ECC_DRY_RUN: '0' },
+        }));
+        assert.strictEqual(fs.existsSync(marker), false, 'project metadata must not select executable code');
+        assert.strictEqual(result.dryRun, true);
+        assert.strictEqual(result.repoRoot, trustedRepo);
+        assert.strictEqual(result.summary.errorCount, 0);
+        assert.strictEqual(result.results[0].status, 'planned');
+        assert.strictEqual(fs.readFileSync(record.installStatePath, 'utf8'), stateBefore);
+      } finally {
+        cleanup(fixture);
+      }
+    })) passed += 1; else failed += 1;
+  }
 
-    assert.strictEqual(
-      deriveRepoRootFromState(state),
-      path.resolve(path.join('/tmp', 'ecc'))
-    );
-  })) passed += 1; else failed += 1;
-
-  if (test('deriveRepoRootFromState fails when source metadata is unavailable', () => {
-    assert.throws(
-      () => deriveRepoRootFromState({ operations: [{ destinationPath: '/tmp/file' }] }),
-      /Unable to infer ECC repo root/
-    );
+  if (test('runAutoUpdate rejects invalid ECC_DRY_RUN values before any commands', () => {
+    const previous = process.env.ECC_DRY_RUN;
+    process.env.ECC_DRY_RUN = 'yes';
+    try {
+      assert.throws(() => runAutoUpdate({}, {
+        discoverInstalledStates() { throw new Error('discovery must not run'); },
+      }), /ECC_DRY_RUN must be "1" or "0"/);
+    } finally {
+      if (previous === undefined) delete process.env.ECC_DRY_RUN;
+      else process.env.ECC_DRY_RUN = previous;
+    }
   })) passed += 1; else failed += 1;
 
   if (test('buildInstallApplyArgs reconstructs legacy installs', () => {
@@ -234,7 +273,7 @@ function runTests() {
     const record = {
       adapter: { target: 'cursor', kind: 'project' },
       state: {
-        target: { target: 'cursor' },
+        target: { target: 'claude' },
         request: {
           profile: 'developer',
           modules: ['platform-configs'],
@@ -295,9 +334,10 @@ function runTests() {
   if (test('determineInstallCwd uses the project root for project installs', () => {
     const record = {
       adapter: { kind: 'project' },
+      targetRoot: path.join('/tmp', 'project', '.cursor'),
       state: {
         target: {
-          root: path.join('/tmp', 'project', '.cursor'),
+          root: path.join('/tmp', 'untrusted', '.cursor'),
         },
       },
     };
@@ -322,7 +362,7 @@ function runTests() {
     assert.strictEqual(result.summary.errorCount, 0);
   })) passed += 1; else failed += 1;
 
-  if (test('runAutoUpdate rejects mixed inferred repo roots', () => {
+  if (test('runAutoUpdate uses the running checkout regardless of recorded source roots', () => {
     const homeDir = createTempDir('auto-update-home-');
     const projectRoot = createTempDir('auto-update-project-');
     const repoOne = createTempDir('auto-update-repo-');
@@ -389,8 +429,8 @@ function runTests() {
         }),
       ];
 
-      assert.throws(
-        () => runAutoUpdate(
+      const commands = [];
+      const result = runAutoUpdate(
           {
             homeDir,
             projectRoot,
@@ -398,10 +438,18 @@ function runTests() {
           },
           {
             discoverInstalledStates: () => records,
+            runExternalCommand(command, args) {
+              commands.push({ command, args });
+              return { stdout: '{}' };
+            },
           }
-        ),
-        /Multiple ECC repo roots detected/
       );
+      const trustedRepo = path.resolve(__dirname, '../..');
+      assert.strictEqual(result.repoRoot, trustedRepo);
+      assert.strictEqual(result.summary.updatedCount, 2);
+      assert.ok(commands.every(({ command, args }) => command === process.execPath
+        && args[0] === path.join(trustedRepo, 'scripts', 'install-apply.js')
+        && args.includes('--dry-run')));
     } finally {
       cleanup(homeDir);
       cleanup(projectRoot);
@@ -453,6 +501,7 @@ function runTests() {
         {
           homeDir,
           projectRoot,
+          repoRoot,
           dryRun: false,
         },
         {

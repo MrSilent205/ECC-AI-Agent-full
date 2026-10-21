@@ -6,7 +6,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const { buildControlPaneAction } = require('./actions');
-const { buildControlPaneSnapshot, resolveControlPaneConfig } = require('./state');
+const { buildControlPaneSnapshot, defaultConfigPaths, resolveControlPaneConfig } = require('./state');
 const { renderControlPaneHtml } = require('./ui');
 const { renderProximityVizHtml } = require('./proximity-viz');
 const { renderControlPlaneViewHtml } = require('./control-plane-view-ui');
@@ -28,10 +28,14 @@ function usage() {
     '  node scripts/control-pane.js [--host 127.0.0.1] [--port 8765] [--db <ecc2.db>] [--state-db <state.db>] [--config <ecc2.toml>] [--query <text>]',
     '',
     'Options:',
+    '  --db <path>        View another ECC2 database (read-only)',
+    '  --config <path>    View another ECC2 configuration (read-only)',
     '  --state-db <path>  Read agent work items from an ECC state-store database',
     '  --read-only        Disable action execution endpoints',
     '  --no-open          Do not open a browser after the server starts',
-    '  --help             Show this help'
+    '  --help             Show this help',
+    '',
+    'Discovered ECC2 configuration files also disable actions until command targets can be forwarded safely.'
   ].join('\n');
 }
 
@@ -163,7 +167,6 @@ function createControlPaneServer(options = {}) {
   const repoRoot = path.resolve(options.repoRoot || path.join(__dirname, '..', '..', '..'));
   const host = options.host || '127.0.0.1';
   const port = options.port === null || options.port === undefined ? 8765 : options.port;
-  const allowActions = options.allowActions !== false;
   const resolvedConfig = resolveControlPaneConfig({
     cwd: options.cwd || repoRoot,
     configPath: options.configPath,
@@ -171,6 +174,17 @@ function createControlPaneServer(options = {}) {
     stateDbPath: options.stateDbPath,
     env: options.env || process.env
   });
+  // Pane and ECC2 configuration discovery differ; do not guess a write target.
+  const nativeConfigRoot = process.platform === 'win32' ? process.env.APPDATA
+    : process.platform === 'linux' ? process.env.XDG_CONFIG_HOME : null;
+  const customSelection = Boolean(options.dbPath || options.configPath
+    || (options.env || process.env).ECC2_DB_PATH || resolvedConfig.configPaths.length
+    || (nativeConfigRoot && fs.existsSync(path.join(nativeConfigRoot, 'ecc2', 'config.toml')))
+    || defaultConfigPaths(path.join(repoRoot, 'ecc2')).some(configPath => fs.existsSync(configPath)));
+  const actionsDisabledReason = customSelection
+    ? 'Actions are disabled for a custom database or configuration (including discovered configuration files) because ECC2 commands use their own configuration.'
+    : 'Control-pane action execution is disabled by --read-only.';
+  const allowActions = options.allowActions !== false && !customSelection;
   const baseQuery = options.query || '';
   const allowedHostnames = buildAllowedHostnames(host);
 
@@ -226,7 +240,8 @@ function createControlPaneServer(options = {}) {
           repoRoot,
           dbPath: resolvedConfig.dbPath,
           stateDbPath: resolvedConfig.stateDbPath,
-          allowActions
+          allowActions,
+          actionsDisabledReason: allowActions ? null : actionsDisabledReason
         });
         return;
       }
@@ -292,7 +307,7 @@ function createControlPaneServer(options = {}) {
         if (!allowActions) {
           sendJson(res, 403, {
             ok: false,
-            error: 'Control-pane action execution is disabled by --read-only.'
+            error: actionsDisabledReason
           });
           return;
         }
@@ -375,6 +390,8 @@ function createControlPaneServer(options = {}) {
       return `http://${host}:${actualPort}`;
     },
     server,
+    allowActions,
+    actionsDisabledReason: allowActions ? null : actionsDisabledReason,
     config: resolvedConfig,
     listen() {
       return new Promise((resolve, reject) => {
