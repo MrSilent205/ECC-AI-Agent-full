@@ -117,6 +117,7 @@ for (const doc of DOCS) {
   add('loads without waiting on the store and never crashes on client errors', async () => {
     const h = harness(doc);
     assert.equal(h.redis.options.disableOfflineQueue, true);
+    assert.ok(h.redis.options.commandsQueueMaxLength > 0, 'pending claims must be bounded');
     assert.equal(typeof h.redis.listeners.error, 'function');
     h.redis.listeners.error(new Error('socket closed'));
   });
@@ -154,7 +155,7 @@ const keepAlive = setInterval(() => {}, 1000);
   }
   await new Promise(resolve => setImmediate(resolve));
   if (unhandled) console.error(`FAIL unhandled promise rejections: ${unhandled}`);
-  console.log(`Passed: ${passed}\nFailed: ${tests.length - passed}`);
+  console.log(`Passed: ${passed}\nFailed: ${tests.length - passed + unhandled}`);
   process.exitCode = passed === tests.length && !unhandled ? 0 : 1;
   clearInterval(keepAlive);
 })();

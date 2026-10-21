@@ -316,18 +316,21 @@ import { createClient } from "redis";
 
 // The guard must never be what takes the seller down. With the offline queue
 // disabled, a command sent while disconnected fails at once instead of waiting;
-// the error listener stops a client error from crashing the process; and the
-// connection is made in the background, so route registration never waits on it.
+// the queue cap does the same when the store is connected but not replying, so
+// abandoned claims cannot pile up; the error listener stops a client error from
+// crashing the process; and the connection is made in the background, so route
+// registration never waits on it.
 const redis = createClient({
   url: process.env.REDIS_URL,
   disableOfflineQueue: true,
+  commandsQueueMaxLength: 1_000,
   socket: { connectTimeout: 2_000 },
 });
 redis.on("error", (err) => console.warn(`replay store: ${err.message}`));
 redis.connect().catch(() => {});
 
 const CLAIM_TTL_S = 900;          // longer than maxTimeoutSeconds plus your slowest handler run
-const CLAIM_TIMEOUT_MS = 250;     // a slow store must not stall paid requests
+const CLAIM_TIMEOUT_MS = 250;     // a slow store must not stall paid requests (the command itself is not cancelled)
 const MAX_HEADER_BYTES = 16_384;  // claims are stored before anything is verified
 
 // One key per authorization, not per header: re-encoding the same signed
