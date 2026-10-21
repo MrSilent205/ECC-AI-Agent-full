@@ -314,7 +314,21 @@ import { createHash } from "node:crypto";
 import { getBase64Encoder, getTransactionDecoder } from "@solana/kit";
 import { createClient } from "redis";
 
-const redis = await createClient({ url: process.env.REDIS_URL }).connect();
+// The guard must never be what takes the seller down. With the offline queue
+// disabled, a command sent while disconnected fails at once instead of waiting;
+// the error listener stops a client error from crashing the process; and the
+// connection is made in the background, so route registration never waits on it.
+const redis = createClient({
+  url: process.env.REDIS_URL,
+  disableOfflineQueue: true,
+  socket: { connectTimeout: 2_000 },
+});
+redis.on("error", (err) => console.warn(`replay store: ${err.message}`));
+redis.connect().catch(() => {});
+
+const CLAIM_TTL_S = 900;          // longer than maxTimeoutSeconds plus your slowest handler run
+const CLAIM_TIMEOUT_MS = 250;     // a slow store must not stall paid requests
+const MAX_HEADER_BYTES = 16_384;  // claims are stored before anything is verified
 
 // One key per authorization, not per header: re-encoding the same signed
 // payment must not make it look new.
@@ -324,13 +338,16 @@ function claimKey(header: string): string {
     const network = p.accepted?.network ?? "";
     const auth = p.payload?.authorization;
     if (auth?.from && auth?.nonce) {
-      // EVM exact (EIP-3009): the token contract accepts each (from, nonce) once.
-      return `x402:${network}:${String(auth.from).toLowerCase()}:${String(auth.nonce).toLowerCase()}`;
+      // EVM exact (EIP-3009): each token contract accepts a (from, nonce) once,
+      // so the asset is part of the authorization's identity.
+      const asset = String(p.accepted?.asset ?? "").toLowerCase();
+      return `x402:${network}:${asset}:${String(auth.from).toLowerCase()}:${String(auth.nonce).toLowerCase()}`;
     }
     if (typeof p.payload?.transaction === "string") {
       // SVM exact: hash the message the payer signed, not the whole transaction.
       // The fee payer's signature slot sits outside the payer's signature, so a
-      // copy with different bytes there is still the same payment.
+      // copy with different bytes there is still the same payment. The message
+      // already names the mint.
       const tx = getTransactionDecoder().decode(getBase64Encoder().encode(p.payload.transaction));
       return `x402:${network}:${createHash("sha256").update(tx.messageBytes).digest("hex")}`;
     }
@@ -340,15 +357,25 @@ function claimKey(header: string): string {
   return `x402:raw:${createHash("sha256").update(header).digest("hex")}`;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(reject, ms, new Error("timeout")).unref()),
+  ]);
+}
+
 // Register on paid routes, before the x402 payment middleware.
 async function replayGuard(req, res, next) {
   const header = req.get("payment-signature") ?? req.get("x-payment");
   if (!header) return next();
+  if (header.length > MAX_HEADER_BYTES) {
+    return res.status(431).json({ error: "payment_header_too_large" });
+  }
   let first = true;
   try {
-    // NX is atomic: of two simultaneous copies exactly one wins. EX only has to
-    // outlive the route's maxTimeoutSeconds; after that the authorization is dead.
-    first = (await redis.set(claimKey(header), "1", { NX: true, EX: 900 })) === "OK";
+    // NX is atomic: of two simultaneous copies exactly one wins.
+    const claimed = redis.set(claimKey(header), "1", { NX: true, EX: CLAIM_TTL_S });
+    first = (await withTimeout(claimed, CLAIM_TIMEOUT_MS)) === "OK";
   } catch {
     // Fail open: the facilitator still refuses a second settlement, so a store
     // outage degrades to the unguarded behaviour instead of blocking buyers.
@@ -363,7 +390,7 @@ async function replayGuard(req, res, next) {
 }
 ```
 
-条件付き挿入ができるストアなら何でもよい：DynamoDB の `attribute_not_exists` 付き `PutItem`、または Postgres のユニークインデックス。クライアント側のコストは、同じ署名で再試行したリクエスト（たとえば 5xx の後、決済がスキップされた場合）が拒否されるようになることだ。アップストリームのクライアントは 402 ごとに新しい承認に署名する。これが防ぐのは 1 つの承認の重複コピーだけである。検証と決済の間に支払いを無効にする支払者（たとえば資金を移動する）は、依然としてハンドラーを 1 回実行させられる。高コストなルートでは、作業の前に資金を確保すること。
+各クレームはファシリテーターが支払いを検証する前に書き込まれるので、この経路は認証されていない書き込みと同様に扱うこと。ヘッダーの上限で 1 リクエストが保存できる量を制限し、ルートは通常のレート制限の内側に置く。条件付き挿入ができるストアなら何でもよい：DynamoDB の `attribute_not_exists` 付き `PutItem`、または Postgres のユニークインデックス。クライアント側のコストは、同じ署名で再試行したリクエスト（たとえば 5xx の後、決済がスキップされた場合）が拒否されるようになることだ。アップストリームのクライアントは 402 ごとに新しい承認に署名する。これが防ぐのは 1 つの承認の重複コピーだけである。検証と決済の間に支払いを無効にする支払者（たとえば資金を移動する）は、依然としてハンドラーを 1 回実行させられる。高コストなルートでは、作業の前に資金を確保すること。
 
 **発見。** x402 バザール拡張を実装するファシリテーターは `/discovery/resources` エンドポイントを公開する — CDP カタログは `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources`、PayAI カタログは `https://facilitator.payai.network/discovery/resources` で照会できる。Solana で支払い可能なサービスには、Solana Foundation のキュレーションカタログである [pay.sh](https://pay.sh) もある。
 

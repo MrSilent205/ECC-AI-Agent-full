@@ -314,7 +314,21 @@ import { createHash } from "node:crypto";
 import { getBase64Encoder, getTransactionDecoder } from "@solana/kit";
 import { createClient } from "redis";
 
-const redis = await createClient({ url: process.env.REDIS_URL }).connect();
+// The guard must never be what takes the seller down. With the offline queue
+// disabled, a command sent while disconnected fails at once instead of waiting;
+// the error listener stops a client error from crashing the process; and the
+// connection is made in the background, so route registration never waits on it.
+const redis = createClient({
+  url: process.env.REDIS_URL,
+  disableOfflineQueue: true,
+  socket: { connectTimeout: 2_000 },
+});
+redis.on("error", (err) => console.warn(`replay store: ${err.message}`));
+redis.connect().catch(() => {});
+
+const CLAIM_TTL_S = 900;          // longer than maxTimeoutSeconds plus your slowest handler run
+const CLAIM_TIMEOUT_MS = 250;     // a slow store must not stall paid requests
+const MAX_HEADER_BYTES = 16_384;  // claims are stored before anything is verified
 
 // One key per authorization, not per header: re-encoding the same signed
 // payment must not make it look new.
@@ -324,13 +338,16 @@ function claimKey(header: string): string {
     const network = p.accepted?.network ?? "";
     const auth = p.payload?.authorization;
     if (auth?.from && auth?.nonce) {
-      // EVM exact (EIP-3009): the token contract accepts each (from, nonce) once.
-      return `x402:${network}:${String(auth.from).toLowerCase()}:${String(auth.nonce).toLowerCase()}`;
+      // EVM exact (EIP-3009): each token contract accepts a (from, nonce) once,
+      // so the asset is part of the authorization's identity.
+      const asset = String(p.accepted?.asset ?? "").toLowerCase();
+      return `x402:${network}:${asset}:${String(auth.from).toLowerCase()}:${String(auth.nonce).toLowerCase()}`;
     }
     if (typeof p.payload?.transaction === "string") {
       // SVM exact: hash the message the payer signed, not the whole transaction.
       // The fee payer's signature slot sits outside the payer's signature, so a
-      // copy with different bytes there is still the same payment.
+      // copy with different bytes there is still the same payment. The message
+      // already names the mint.
       const tx = getTransactionDecoder().decode(getBase64Encoder().encode(p.payload.transaction));
       return `x402:${network}:${createHash("sha256").update(tx.messageBytes).digest("hex")}`;
     }
@@ -340,15 +357,25 @@ function claimKey(header: string): string {
   return `x402:raw:${createHash("sha256").update(header).digest("hex")}`;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(reject, ms, new Error("timeout")).unref()),
+  ]);
+}
+
 // Register on paid routes, before the x402 payment middleware.
 async function replayGuard(req, res, next) {
   const header = req.get("payment-signature") ?? req.get("x-payment");
   if (!header) return next();
+  if (header.length > MAX_HEADER_BYTES) {
+    return res.status(431).json({ error: "payment_header_too_large" });
+  }
   let first = true;
   try {
-    // NX is atomic: of two simultaneous copies exactly one wins. EX only has to
-    // outlive the route's maxTimeoutSeconds; after that the authorization is dead.
-    first = (await redis.set(claimKey(header), "1", { NX: true, EX: 900 })) === "OK";
+    // NX is atomic: of two simultaneous copies exactly one wins.
+    const claimed = redis.set(claimKey(header), "1", { NX: true, EX: CLAIM_TTL_S });
+    first = (await withTimeout(claimed, CLAIM_TIMEOUT_MS)) === "OK";
   } catch {
     // Fail open: the facilitator still refuses a second settlement, so a store
     // outage degrades to the unguarded behaviour instead of blocking buyers.
@@ -363,7 +390,7 @@ async function replayGuard(req, res, next) {
 }
 ```
 
-任何支持条件插入的存储都可以：DynamoDB 带 `attribute_not_exists` 的 `PutItem`，或 Postgres 的唯一索引。客户端的代价是，使用同一签名重试的请求（例如在 5xx 之后，结算被跳过时）现在会被拒绝；上游客户端本来就会为每个 402 签署新的授权。这只能阻止同一授权的重复副本。在验证和结算之间使支付失效的付款方（例如转走资金）仍能触发一次处理程序运行；对于高成本路由，应在执行工作前先锁定资金。
+每个认领都是在结算器验证支付之前写入的，因此应像对待任何未经认证的写入一样对待这条路径：请求头上限限制了单个请求能存储的内容，并且该路由应处于常规速率限制之后。任何支持条件插入的存储都可以：DynamoDB 带 `attribute_not_exists` 的 `PutItem`，或 Postgres 的唯一索引。客户端的代价是，使用同一签名重试的请求（例如在 5xx 之后，结算被跳过时）现在会被拒绝；上游客户端本来就会为每个 402 签署新的授权。这只能阻止同一授权的重复副本。在验证和结算之间使支付失效的付款方（例如转走资金）仍能触发一次处理程序运行；对于高成本路由，应在执行工作前先锁定资金。
 
 **发现。** 实现 x402 集市扩展的结算器会公开 `/discovery/resources` 端点——可在 `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources` 查询 CDP 目录，在 `https://facilitator.payai.network/discovery/resources` 查询 PayAI 目录。对于 Solana 可付费服务，还有 Solana 基金会的精选目录 [pay.sh](https://pay.sh)。
 
