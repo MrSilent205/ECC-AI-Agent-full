@@ -3946,6 +3946,87 @@ function runTests() {
   })) passed++;
   else failed++;
 
+  // --- Exempt globs judge the real location too: a symlink cannot carry the exemption out ---
+  // <base>/real/proj holds README.md, src/app.js and scratch/; <base>/alias -> <base>/real.
+  const exemptLinkBase = fs.realpathSync(fs.mkdtempSync(path.join(tmpRoot, 'gateguard-exempt-link-')));
+  const exemptLinkRoot = path.join(exemptLinkBase, 'real', 'proj');
+  const exemptLinksReady = (() => {
+    fs.mkdirSync(path.join(exemptLinkRoot, 'scratch'), { recursive: true });
+    fs.mkdirSync(path.join(exemptLinkRoot, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(exemptLinkRoot, 'README.md'), 'x');
+    fs.writeFileSync(path.join(exemptLinkRoot, 'src', 'app.js'), 'x');
+    fs.writeFileSync(path.join(exemptLinkRoot, 'scratch', 'notes.md'), 'x');
+    try {
+      fs.symlinkSync(path.join(exemptLinkRoot, 'README.md'), path.join(exemptLinkRoot, 'scratch', 'link.md'));
+      fs.symlinkSync(path.join(exemptLinkRoot, 'scratch', 'notes.md'), path.join(exemptLinkRoot, 'scratch', 'notes-link.md'));
+      fs.symlinkSync(path.join(exemptLinkRoot, 'src'), path.join(exemptLinkRoot, 'scratch', 'src-alias'), 'dir');
+      fs.symlinkSync(path.join(exemptLinkBase, 'real'), path.join(exemptLinkBase, 'alias'), 'dir');
+      return true;
+    } catch (e) {
+      if (process.platform === 'win32' && e.code === 'EPERM') return false; // no symlink privilege
+      throw e;
+    }
+  })();
+  const exemptLinkRun = (tool, toolInput, glob, root = exemptLinkRoot) => {
+    clearState();
+    const result = runHook(
+      { cwd: root, tool_name: tool, tool_input: toolInput },
+      { GATEGUARD_EXEMPT_GLOBS: glob, CLAUDE_PROJECT_DIR: root }
+    );
+    assert.strictEqual(result.code, 0, result.stderr);
+    const output = parseOutput(result.stdout);
+    assert.ok(output && typeof output === 'object', `hook output must be JSON: ${result.stdout}`);
+    if (!output.hookSpecificOutput) {
+      assert.strictEqual(output.tool_name, tool, 'a pass-through must echo the tool input');
+      return undefined;
+    }
+    return output.hookSpecificOutput.permissionDecision;
+  };
+  const exemptLinkCase = (name, fn) => {
+    if (test(name, () => {
+      if (exemptLinksReady) fn();
+    })) passed++;
+    else failed++;
+  };
+
+  [
+    { kind: 'relative', glob: 'scratch/**' },
+    { kind: 'absolute', glob: `${exemptLinkRoot.replace(/\\/g, '/')}/scratch/**` }
+  ].forEach(({ kind, glob }) => {
+    exemptLinkCase(`a symlink in an exempt dir does not exempt its target outside the glob (${kind} glob)`, () => {
+      const linked = path.join(exemptLinkRoot, 'scratch', 'link.md');
+      assert.strictEqual(exemptLinkRun('Edit', { file_path: linked, old_string: 'a', new_string: 'b' }, glob), 'deny');
+      assert.strictEqual(exemptLinkRun('Edit', { file_path: path.join(exemptLinkRoot, 'scratch', 'notes.md'), old_string: 'a', new_string: 'b' }, glob), undefined, 'control: a plain exempt file still passes');
+    });
+  });
+
+  exemptLinkCase('a symlink that stays inside the exempt dir keeps the exemption', () => {
+    const linked = path.join(exemptLinkRoot, 'scratch', 'notes-link.md');
+    assert.strictEqual(exemptLinkRun('Edit', { file_path: linked, old_string: 'a', new_string: 'b' }, 'scratch/**'), undefined);
+  });
+
+  exemptLinkCase('a new file through a symlinked directory in an exempt dir is not exempt', () => {
+    const created = path.join(exemptLinkRoot, 'scratch', 'src-alias', 'new_module.js');
+    assert.strictEqual(exemptLinkRun('Write', { file_path: created, content: 'x' }, 'scratch/**'), 'deny');
+  });
+
+  exemptLinkCase('MultiEdit gates a symlinked entry even when its path matches an exempt glob', () => {
+    const decision = exemptLinkRun('MultiEdit', {
+      edits: [{ file_path: path.join(exemptLinkRoot, 'scratch', 'notes.md') }, { file_path: path.join(exemptLinkRoot, 'scratch', 'link.md') }]
+    }, 'scratch/**');
+    assert.strictEqual(decision, 'deny');
+  });
+
+  exemptLinkCase('a project reached through a symlinked parent keeps relative and absolute exemptions', () => {
+    const aliasRoot = path.join(exemptLinkBase, 'alias', 'proj');
+    const plain = path.join(aliasRoot, 'scratch', 'notes.md');
+    for (const glob of ['scratch/**', `${aliasRoot.replace(/\\/g, '/')}/scratch/**`, `${exemptLinkBase.replace(/\\/g, '/')}/alias/*/scratch/**`, `${exemptLinkBase.replace(/\\/g, '/')}/alias/*/SCRATCH/**`]) {
+      assert.strictEqual(exemptLinkRun('Edit', { file_path: plain, old_string: 'a', new_string: 'b' }, glob, aliasRoot), undefined, glob);
+      assert.strictEqual(exemptLinkRun('Edit', { file_path: path.join(aliasRoot, 'scratch', 'link.md'), old_string: 'a', new_string: 'b' }, glob, aliasRoot), 'deny', glob);
+    }
+  });
+  fs.rmSync(exemptLinkBase, { recursive: true, force: true });
+
   // --- PowerShell tool consumer contract ---
   if (
     test('normalizes PowerShell tool-name casing before destructive classification', () => {

@@ -179,6 +179,27 @@ function getExtraDestructiveRegex() {
 // `**` across segments, `?` a single char.
 let exemptCacheKey = null;
 let exemptCacheRegexes = null;
+function exemptGlobRegex(glob) {
+  let source = '';
+  for (let index = 0; index < glob.length; index++) {
+    const char = glob[index];
+    if (char === '*' && glob[index + 1] === '*') {
+      index++;
+      if (glob[index + 1] === '/') {
+        source += '(?:.*/)?';
+        index++;
+      } else source += '.*';
+    } else if (char === '*') source += '[^/]*';
+    else if (char === '?') source += '[^/]';
+    else source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  try {
+    return new RegExp(`^${source}$`);
+  } catch (_) {
+    return null;
+  }
+}
+
 function getExemptMatchers() {
   const raw = process.env.GATEGUARD_EXEMPT_GLOBS || '';
   if (raw === exemptCacheKey) {
@@ -187,42 +208,59 @@ function getExemptMatchers() {
   exemptCacheKey = raw;
   exemptCacheRegexes = raw
     .split(',')
-    .map(s => normalizeForMatch(s.trim()))
+    .map(s => s.trim().replace(/\\/g, '/'))
     .filter(Boolean)
-    .map(glob => {
-      let source = '';
-      for (let index = 0; index < glob.length; index++) {
-        const char = glob[index];
-        if (char === '*' && glob[index + 1] === '*') {
-          index++;
-          if (glob[index + 1] === '/') {
-            source += '(?:.*/)?';
-            index++;
-          } else source += '.*';
-        } else if (char === '*') source += '[^/]*';
-        else if (char === '?') source += '[^/]';
-        else source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-      }
-      try {
-        return { regex: new RegExp(`^${source}$`), absolute: path.posix.isAbsolute(glob) || path.win32.isAbsolute(glob) };
-      } catch (_) {
-        return null;
-      }
+    .map(written => {
+      const glob = normalizeForMatch(written);
+      const regex = exemptGlobRegex(glob);
+      return regex ? { written, regex, absolute: path.posix.isAbsolute(glob) || path.win32.isAbsolute(glob) } : null;
     })
     .filter(Boolean);
   return exemptCacheRegexes;
 }
 
+function matchesExemptGlob(target, projectRoot, paths, absoluteRegexFor = matcher => matcher.regex) {
+  const relative = paths.relative(projectRoot, target);
+  const contained = relative !== '..' && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative);
+  return getExemptMatchers().some(matcher => {
+    if (!matcher.absolute) return contained && matcher.regex.test(normalizeForMatch(relative));
+    const regex = absoluteRegexFor(matcher);
+    return Boolean(regex) && regex.test(normalizeForMatch(target));
+  });
+}
+
+// An absolute glob as it reads once its literal leading directories are
+// symlink-resolved (`/tmp/...` is `/private/tmp/...` on macOS). Null when that
+// prefix has no real location.
+function realAbsoluteGlobRegex(glob, isWin) {
+  const segments = glob.split('/');
+  const wild = segments.findIndex(segment => /[*?]/.test(segment));
+  const literal = wild === -1 ? segments.length - 1 : wild;
+  const prefix = segments.slice(0, literal).join('/') || '/';
+  const realPrefix = targetClass().realLocationOf(isWin ? prefix.replace(/\//g, '\\') : prefix, isWin);
+  if (!realPrefix) return null;
+  const rest = segments.slice(literal).join('/');
+  return exemptGlobRegex(normalizeForMatch(`${realPrefix.replace(/[\\/]$/, '')}/${rest}`));
+}
+
+// The path as written and its real location must both match: a symlink inside
+// an exempt tree does not exempt its target. See docs/gateguard/design-notes.md#exempt-globs
 function isExemptPath(filePath, data) {
   const projectRoot = process.env.CLAUDE_PROJECT_DIR || data.cwd || process.cwd();
   if (typeof projectRoot !== 'string' || typeof filePath !== 'string') return false;
-  const paths = targetClass().WINDOWS_PATH_PATTERN.test(projectRoot) ? path.win32 : path.posix;
+  const isWin = targetClass().WINDOWS_PATH_PATTERN.test(projectRoot);
+  const paths = isWin ? path.win32 : path.posix;
   if (!paths.isAbsolute(projectRoot)) return false;
   const target = paths.resolve(projectRoot, filePath);
-  const relative = paths.relative(projectRoot, target);
-  const contained = relative !== '..' && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative);
-  return getExemptMatchers().some(({ regex, absolute }) =>
-    absolute ? regex.test(normalizeForMatch(target)) : contained && regex.test(normalizeForMatch(relative))
+  if (!matchesExemptGlob(target, projectRoot, paths)) return false;
+  // A Windows-style path has no real location on a POSIX host (and vice versa).
+  if (isWin !== (process.platform === 'win32')) return true;
+  const realTarget = targetClass().realLocationOf(target, isWin);
+  if (!realTarget) return false;
+  if (realTarget === target) return true;
+  const realRoot = targetClass().realLocationOf(projectRoot, isWin) || projectRoot;
+  return matchesExemptGlob(realTarget, realRoot, paths, matcher =>
+    matcher.regex.test(normalizeForMatch(realTarget)) ? matcher.regex : realAbsoluteGlobRegex(matcher.written, isWin)
   );
 }
 
