@@ -215,6 +215,10 @@ const FORMATTER_PATTERN =
 const TEST_RUNNER_PATTERN =
   /^(npm test|npx vitest|npx jest|pytest|go test|cargo test)(\s+[-A-Za-z0-9_./=:@,+]+)*$/
 
+/** Flags that load or execute code the user never reviewed. */
+const UNSAFE_CODE_LOADING_FLAGS =
+  /(?:^|\s)(?:--plugin|--config|--exec|-exec|--require|-r|-p|--setupFiles|--import|--loader)(?:[=\s]|$)/
+
 function asResourceList(resources: string | string[] | undefined | null): string[] {
   if (Array.isArray(resources)) {
     return resources.map((entry) => String(entry))
@@ -250,6 +254,10 @@ function createPermissionHook(
       for (const command of commands) {
         if (UNSAFE_SHELL_SYNTAX.test(command)) {
           log("debug", "[ECC] Bash permission with shell composition requires user decision")
+          return { status: "ask", message: "" }
+        }
+        if (UNSAFE_CODE_LOADING_FLAGS.test(command)) {
+          log("debug", "[ECC] Bash permission with a code-loading flag requires user decision")
           return { status: "ask", message: "" }
         }
         if (FORMATTER_PATTERN.test(command)) continue

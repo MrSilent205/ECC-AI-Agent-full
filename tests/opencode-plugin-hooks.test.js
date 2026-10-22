@@ -521,6 +521,30 @@ async function main() {
       ),
     ],
     [
+      "permission hook refuses code-loading flags",
+      async () => withTempProject(
+        [],
+        async (projectDir) => {
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
+
+          for (const command of [
+            "go test -exec /tmp/x ./...",
+            "npx prettier --plugin ./x.js",
+            "cargo test --config build.rustc-wrapper=/tmp/x",
+            "npx jest --setupFiles ./x.js",
+            "npx vitest --import ./x.js",
+            "pytest --require ./x.py",
+          ]) {
+            const event = permissionEvent("bash", [command])
+            await captured.permission[0](event)
+            assert.strictEqual(event.effect, "ask", `Expected ask for ${JSON.stringify(command)}`)
+          }
+        }
+      ),
+    ],
+    [
       "permission hook requires every resource to pass the allowlist",
       async () => withTempProject(
         [],
