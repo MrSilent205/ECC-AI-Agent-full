@@ -99,10 +99,14 @@ function createInput(projectDir) {
 }
 
 async function createHooks(projectDir) {
-  const { result, out } = await captureConsole(async () => {
-    const plugin = await loadPlugin()
-    return await plugin.default.server(createInput(projectDir))
-  })
+  const { result, out } = await captureConsole(async () =>
+    // The runtime reads the profile once at creation time, so it is pinned here
+    // instead of inheriting whatever the ambient environment happens to set.
+    withProfile("standard", async () => {
+      const plugin = await loadPlugin()
+      return await plugin.default.server(createInput(projectDir))
+    })
+  )
   return { hooks: result, logs: out }
 }
 

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tests for OpenCode custom tools
  * 
  * Tests the 8 custom tools: run-tests, check-coverage, security-audit, 

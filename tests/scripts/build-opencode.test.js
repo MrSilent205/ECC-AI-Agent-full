@@ -232,6 +232,7 @@ function main() {
         applyInstallPlan(plan)
         const config = JSON.parse(fs.readFileSync(path.join(plan.targetRoot, "opencode.json"), "utf8"))
         // V2 has no skills.paths key (user point 6): do not assert it here.
+        assert.ok(config && typeof config === "object", "Expected the installed opencode.json to be valid JSON")
         assert.ok(!fs.existsSync(path.join(plan.targetRoot, "tools", "run-tests.js")))
         checkRuntime(
           plan.targetRoot,

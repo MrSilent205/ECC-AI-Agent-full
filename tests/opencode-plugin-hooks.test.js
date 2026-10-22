@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tests for the OpenCode v2 hook plugin surface.
  *
  * The plugin default-exports a v2 definition ({ id, setup }); setup registers
@@ -283,6 +283,50 @@ async function main() {
         )
         assert.ok(captured2, "Expected second setup to resolve")
         assert.ok(!store.hasChanges(), "Expected session.deleted to clear tracked changes")
+      }),
+    ],
+    [
+      "execute.before classifies a new write as added and an existing write as modified",
+      async () => withTempProject(["src/existing.ts"], async (projectDir) => {
+        const { captured } = await withProfile("standard", () =>
+          setupPlugin(plugin, projectDir, [])
+        )
+
+        const storeUrl = pathToFileURL(
+          path.join(__dirname, "..", ".opencode", "dist", "plugins", "lib", "changed-files-store.js")
+        ).href
+        const store = await import(storeUrl)
+        store.clearChanges()
+
+        // The before hook records the pending write kind; the after hook consumes it.
+        await captured.toolBefore[0](toolBeforeEvent("write", { path: "src/created.ts" }))
+        await captured.toolAfter[0](toolAfterEvent("write", { path: "src/created.ts" }))
+
+        await captured.toolBefore[0](toolBeforeEvent("write", { path: "src/existing.ts" }))
+        await captured.toolAfter[0](toolAfterEvent("write", { path: "src/existing.ts" }))
+
+        const byPath = new Map(
+          store.getChangedPaths().map((entry) => [entry.path, entry.changeType])
+        )
+        assert.strictEqual(
+          byPath.get(path.normalize("src/created.ts")),
+          "added",
+          "Expected execute.before to record a new write as added"
+        )
+        assert.strictEqual(
+          byPath.get(path.normalize("src/existing.ts")),
+          "modified",
+          "Expected execute.before to record an existing write as modified"
+        )
+
+        // Without the before hook the same write falls back to modified.
+        store.clearChanges()
+        await captured.toolAfter[0](toolAfterEvent("write", { path: "src/created.ts" }))
+        assert.strictEqual(
+          store.getChangedPaths()[0].changeType,
+          "modified",
+          "Expected a write without a before event to fall back to modified"
+        )
       }),
     ],
     [

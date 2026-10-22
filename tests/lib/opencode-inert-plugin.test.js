@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /**
  * Contract tests for the inert OpenCode plugin ECC materializes when hook
