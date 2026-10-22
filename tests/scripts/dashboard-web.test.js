@@ -1300,6 +1300,48 @@ test('loadMcps handles empty mcp-configs directory', () => {
   cleanup(testRoot);
 });
 
+asyncTest('dashboard server survives a missing browser launcher (no xdg-open in PATH)', async () => {
+  const { spawn } = require('child_process');
+  const emptyBin = createTempDir('ecc-nolauncher-');
+  const fakeHome = createTempDir('ecc-fakehome-');
+  // Reserve a free port, then release it for the child.
+  const port = await new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port: freePort } = probe.address();
+      probe.close(() => resolve(freePort));
+    });
+  });
+  // PATH holds only the empty dir, so the platform opener (xdg-open on Linux,
+  // open on macOS) cannot be found: the launch must degrade to a no-op instead
+  // of killing the server with an unhandled spawn 'error' event (#3600).
+  const child = spawn(process.execPath, [SCRIPT, String(port)], {
+    env: { ...process.env, PATH: emptyBin, HOME: fakeHome },
+    stdio: 'ignore',
+  });
+  try {
+    let response;
+    const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) break;
+      try {
+        response = await requestDashboard(port, { path: '/' });
+        break;
+      } catch {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+    assert.ok(response, 'dashboard did not respond before the deadline');
+    assert.strictEqual(response.statusCode, 200);
+    assert.strictEqual(child.exitCode, null, 'dashboard process died after launch');
+  } finally {
+    child.kill('SIGKILL');
+    cleanup(emptyBin);
+    cleanup(fakeHome);
+  }
+});
+
 // ===================== Results =====================
 
 async function runAsyncTests() {

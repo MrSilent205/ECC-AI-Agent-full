@@ -29,6 +29,7 @@ const {
 } = require('./lib/loopback-guard');
 const { normalizeAgentTools } = require('./lib/agent-tools');
 const { readHooksConfig } = require('./lib/hooks-config');
+const { openBrowser } = require('./lib/platform-launch');
 const { getClaudeDir } = require('./lib/utils');
 
 const DEFAULT_HOST = '127.0.0.1';
@@ -1080,7 +1081,9 @@ if (require.main === module) {
     const displayHost = HOST.includes(':') ? `[${HOST}]` : HOST;
     const dashboardUrl = `http://${displayHost}:${PORT}`;
     console.log(`\n    ECC Capabilities  →  ${dashboardUrl}\n`);
-    try { const { spawn } = require('child_process'); const p = process.platform; const c = p === 'darwin' ? 'open' : p === 'win32' ? 'start' : 'xdg-open'; if (c === 'start') spawn('cmd', ['/c', 'start', dashboardUrl], { stdio: 'ignore' }); else spawn(c, [dashboardUrl], { stdio: 'ignore' }); } catch { /* best-effort auto-open */ }
+    // Best-effort auto-open via the shared launcher: a missing opener (e.g. no
+    // xdg-open on a headless Linux box) must never crash the server (#3600).
+    openBrowser(dashboardUrl);
   } });
 }
 
