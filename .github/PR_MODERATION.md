@@ -10,18 +10,21 @@ judge whether a patch is useful. Existing open PRs are not bulk-closed on rollou
 | --- | --- | --- |
 | Burst allowance | Five creations per author in 20 minutes | Close and lock excess PRs |
 | Severe burst | More than ten creations in 20 minutes | Attempt account block; alert maintainers |
-| Open-PR cap | Ten open PRs per author at any time | Close only the newly opened or reopened PR above the cap with an explanatory comment; no lock, no alert |
+| Open-PR cap | Ten open PRs per author at any time | Close excess new PRs or a reopened PR with an explanatory comment; no lock, no alert |
 | Known denied account | User ID `108231307`, currently `dajiaohuang` | Close and lock its incoming/reopened PR |
-| Trusted contributors | Live repository write, maintain, or admin permission | Exempt from the burst guard |
+| Trusted contributors | Live repository write, maintain, or admin permission | Exempt from burst and denied-account moderation; still subject to the open-PR cap |
 | Notifications | `@affaan-m @haelyra` | One bot-authored issue per author per UTC day, plus one escalation comment |
 
 Edit `pr-burst-policy.json` to change thresholds, notification recipients or
 denied numeric IDs, or `maxOpen` to change the open-PR cap.
 
-The open-PR cap runs on opened and reopened events. Up to 100 author events
+The open-PR cap applies to every author on opened and reopened events. Up to 100 author events
 queue in Actions, so normal submission bursts keep their pending cap checks.
 The guard checks a full paginated list of open PRs. A newly opened PR closes
 only when at least ten older PRs by that author are still open.
+If an opened event runs late, it also closes newer excess PRs visible in that
+snapshot. This catches new PRs whose individual checks were cancelled by the
+Actions queue without closing any PR that predates the triggering opened event.
 Reopening consumes a new slot, so the reopened PR closes when the author is
 over the cap. Existing open PRs stay open, even when their author already had
 more than ten. A bot comment names the count and limit. Closing is reversible:

@@ -439,12 +439,13 @@ Please submit at most five PRs within any 20-minute period. Automated moderation
 closes and locks excess PRs, including drafts. More than ten submissions within
 20 minutes triggers a maintainer alert and an account-block attempt. Closed PRs
 still count toward the window. Contributors with repository write access bypass
-this policy. Maintainers can review exceptions through the moderation alert.
+burst moderation. Maintainers can review exceptions through the moderation alert.
 
 Please also keep at most ten PRs open at a time. When you open or reopen a PR
 above that cap, automation closes that PR with a comment explaining the count.
-Existing open PRs remain open. Get PRs merged or close the ones you no longer
-need, then reopen.
+Existing open PRs remain open, even for authors already above ten. The cap applies
+to every author, including maintainers. Get PRs merged or close the ones you no
+longer need, then reopen.
 Ten open PRs is more than any one reviewer can keep in flight, so this keeps
 review time on the work you care about most.
 

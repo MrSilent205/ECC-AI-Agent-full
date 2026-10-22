@@ -85,18 +85,23 @@ test('actual CLI closes six excess PRs, locks them, blocks with owner identity, 
       return true;
     });
     permission = 'write';
-    assert.equal(JSON.parse((await run()).stdout).exempt, true);
+    const beforeCollaboratorRun = mutations.length;
+    assert.equal(JSON.parse((await run()).stdout).burstExempt, true);
+    assert.equal(mutations.length, beforeCollaboratorRun);
   } finally {
     await new Promise(resolve => server.close(resolve));
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test('actual CLI closes only a new PR when twenty earlier PRs remain open', async () => {
+for (const permission of ['read', 'write']) test(`actual CLI caps ${permission} author without closing twenty earlier PRs`, async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-pr-cap-'));
-  const rows = Array.from({ length: 21 }, (_, i) => ({ number: i === 20 ? 3649 : i + 1,
+  const closedTrigger = permission === 'write';
+  const extraNewer = closedTrigger ? 5 : 0;
+  const rows = Array.from({ length: 21 + extraNewer }, (_, i) => ({ number: i < 20 ? i + 1 : 3649 + i - 20,
     user: { id: 42, login: 'contributor' }, state: 'open',
     created_at: new Date(Date.UTC(2026, 9, 1, i, 0, 0)).toISOString() }));
+  if (closedTrigger) rows[20].state = 'closed';
   const mutations = [];
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -106,11 +111,14 @@ test('actual CLI closes only a new PR when twenty earlier PRs remain open', asyn
     const send = value => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
     if (req.method !== 'GET') mutations.push({ method: req.method, route: url.pathname, body });
     if (url.pathname === '/repos/owner/repo') return send({ owner: { login: 'owner', type: 'User' } });
-    if (url.pathname.includes('/collaborators/')) return send({ permission: 'read' });
+    if (url.pathname.includes('/collaborators/')) return send({ permission });
     if (url.pathname.endsWith('/pulls/3649') && req.method === 'GET') return send(rows[20]);
     if (url.pathname.endsWith('/pulls')) return send(rows.filter(pr => url.searchParams.get('state') !== 'open' || pr.state === 'open').reverse());
-    if (url.pathname.endsWith('/issues/3649/comments')) return send(req.method === 'GET' ? [] : {});
-    if (url.pathname.endsWith('/pulls/3649') && req.method === 'PATCH') { rows[20].state = body.state; return send(rows[20]); }
+    if (/\/issues\/\d+\/comments$/.test(url.pathname)) return send(req.method === 'GET' ? [] : {});
+    if (/\/pulls\/\d+$/.test(url.pathname) && req.method === 'PATCH') {
+      const pr = rows.find(row => row.number === Number(url.pathname.split('/').pop()));
+      pr.state = body.state; return send(pr);
+    }
     res.statusCode = 404; send({ message: 'fixture route missing' });
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -123,11 +131,16 @@ test('actual CLI closes only a new PR when twenty earlier PRs remain open', asyn
     const env = { ...process.env, NODE_OPTIONS: `--require=${preload}`, GITHUB_REPOSITORY: 'owner/repo',
       GITHUB_TOKEN: 'moderation-token', GITHUB_EVENT_PATH: event, PR_MODERATION_BLOCK_TOKEN: '' };
     const report = JSON.parse((await exec(process.execPath, ['scripts/ci/pr-burst-guard.js'], { cwd: root, env })).stdout);
-    assert.equal(report.openCount, 21);
-    assert.deepEqual(report.capExcess.map(pr => pr.number), [3649]);
+    assert.equal(report.openCount, 21 + extraNewer - Number(closedTrigger));
+    assert.equal(report.burstExempt, permission === 'write');
+    const expectedExcess = Array.from({ length: 1 + extraNewer - Number(closedTrigger) },
+      (_, i) => 3649 + i + Number(closedTrigger));
+    assert.deepEqual(report.capExcess.map(pr => pr.number), expectedExcess);
     assert.equal(rows.filter(pr => pr.state === 'open').length, 20);
-    assert.deepEqual(mutations.filter(m => m.method === 'PATCH').map(m => m.route), ['/repos/owner/repo/pulls/3649']);
-    assert.match(mutations.find(m => m.route.endsWith('/issues/3649/comments')).body.body, /21 open pull requests.*limit of 10/);
+    assert.deepEqual(mutations.filter(m => m.method === 'PATCH').map(m => m.route),
+      expectedExcess.map(number => `/repos/owner/repo/pulls/${number}`));
+    assert.match(mutations.find(m => m.route.endsWith(`/issues/${expectedExcess[0]}/comments`)).body.body,
+      new RegExp(`${21 + extraNewer - Number(closedTrigger)} open pull requests.*limit of 10`));
   } finally {
     await new Promise(resolve => server.close(resolve));
     fs.rmSync(tmp, { recursive: true, force: true });
