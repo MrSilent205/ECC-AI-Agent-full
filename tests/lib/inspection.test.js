@@ -170,6 +170,16 @@ async function runTests() {
     assert.strictEqual(group.runs.length, 3);
   })) passed += 1; else failed += 1;
 
+  if (await test('keeps distinct backslash escape diagnostics separate', async () => {
+    const reasons = [String.raw`Invalid escape: \q`, String.raw`Invalid escape: \x`, String.raw`Invalid escape: \z`];
+    const runs = reasons.map((failureReason, index) => makeSkillRun({ id: `escape-${index}`, failureReason }));
+    const patterns = detectPatterns(runs);
+    assert.strictEqual(generateReport(patterns).status, 'clean');
+    assert.deepStrictEqual(patterns, []);
+    assert.strictEqual(groupFailures(runs).size, 3);
+    assert.deepStrictEqual(reasons.map(normalizeFailureReason), reasons.map(reason => reason.toLowerCase()));
+  })) passed += 1; else failed += 1;
+
   if (await test('detectPatterns returns empty array when below threshold', async () => {
     const runs = [
       makeSkillRun({ id: 'r1', failureReason: 'timeout' }),

@@ -26,8 +26,8 @@ function normalizeFailureReason(reason) {
     // Directories may contain spaces, but trailing whitespace separates diagnostic prose.
     // Spaced leaves need an extension before a colon, or quotes; preserve extensionless diagnostics.
     .replace(/(?:\b[a-z]:|\\)[\\/](?:[^\\/:*?"<>|\r\n]*[^\s\\/:*?"<>|][\\/])*[^\s\\/:*?"<>|(),;]+(?: [^\\/:*?"<>|\r\n]*\.[^\s\\/:*?"<>|]+(?=:))?[\\/]*/gu, '<path>')
-    // Strip remaining file paths
-    .replace(/(?:\b[a-z]:)?[\\/][\w./\\-]+/g, '<path>')
+    // Strip remaining POSIX file paths
+    .replace(/\/[\w./-]+/g, '<path>')
     // Collapse whitespace
     .replace(/\s+/g, ' ')
     .trim();
