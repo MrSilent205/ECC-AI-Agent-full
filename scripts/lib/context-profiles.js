@@ -104,11 +104,21 @@ function compileContextProfileWithRegistry({ repoRoot = DEFAULT_REPO_ROOT, ...op
   return { registry, plan: compileContextPlan(registry, { repoRoot, ...options }) };
 }
 
+// Deep-freeze a registry view so callbacks can read the snapshot but cannot
+// mutate the canonical registry that later projections are compiled from.
+function freezeRegistryView(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const key of Reflect.ownKeys(value)) freezeRegistryView(value[key]);
+  }
+  return value;
+}
+
 // Batch variant of the canonical compiler: one registry snapshot, many projections.
 // The snapshot is still produced by the canonical loader inside this module, so a
 // caller declares which projections to compile but never supplies a registry.
 // `projections` may be a function of the loaded registry for callers that derive
-// their projection list from the snapshot itself.
+// their projection list from the snapshot itself; it receives a frozen copy.
 function compileContextProfileBatch(options = {}) {
   for (const key of Reflect.ownKeys(options)) {
     if (!BATCH_KEYS.has(key)) throw new Error(`Unknown context profile batch option: ${String(key)}`);
@@ -121,7 +131,7 @@ function compileContextProfileBatch(options = {}) {
   }
   const registry = loadContextRegistry({ repoRoot });
   const requested = projections
-    ? projections(registry)
+    ? projections(freezeRegistryView(structuredClone(registry)))
     : profileIds.flatMap(profileId => (targets || registry.targets).map(target => ({ profileId, target })));
   if (!Array.isArray(requested)) throw new Error('Context profile projections must be an array');
   const plans = requested.map(projection => compileContextPlan(registry, { ...projection, repoRoot }));

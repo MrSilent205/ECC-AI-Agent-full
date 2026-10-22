@@ -170,12 +170,23 @@ function validate(repoRoot = DEFAULT_REPO_ROOT) {
   // One registry snapshot for every target/profile carrier: the batch plans them
   // all together instead of reloading the registry per carrier.
   const { registry, carriers } = planContextCarrierBatch({ repoRoot, profileIds: PROFILES });
-  const byTarget = new Map();
+  const carriersByTarget = new Map();
   for (const carrier of carriers) {
-    const entry = byTarget.get(carrier.target) || { layout: null, carriers: [] };
-    entry.carriers.push(carrier);
-    if (carrier.layout) entry.layout = { target: carrier.target, layout: carrier.layout.id, skillRoot: carrier.layout.skillRoot };
-    byTarget.set(carrier.target, entry);
+    const list = carriersByTarget.get(carrier.target);
+    if (list) list.push(carrier);
+    else carriersByTarget.set(carrier.target, [carrier]);
+  }
+  // Build closed entries in one pass instead of mutating a shared accumulator:
+  // each target maps to a frozen snapshot of its carriers and layout.
+  const byTarget = new Map();
+  for (const [target, list] of carriersByTarget) {
+    const withLayout = list.find(carrier => carrier.layout);
+    byTarget.set(target, Object.freeze({
+      layout: withLayout
+        ? Object.freeze({ target, layout: withLayout.layout.id, skillRoot: withLayout.layout.skillRoot })
+        : null,
+      carriers: Object.freeze([...list]),
+    }));
   }
 
   for (const target of registry.targets) {

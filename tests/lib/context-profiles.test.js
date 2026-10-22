@@ -175,6 +175,24 @@ test('a batch loads the registry once instead of once per projection', context =
   }
 }));
 
+test('projection callbacks receive a frozen registry view', () => withFixture(root => {
+  const { plans } = compileContextProfileBatch({
+    repoRoot: root,
+    projections: registry => {
+      assert.ok(Object.isFrozen(registry), 'Expected the callback registry to be frozen');
+      assert.ok(Object.isFrozen(registry.entries), 'Expected registry entries to be frozen');
+      assert.ok(Object.isFrozen(registry.entries[0]), 'Expected registry entries to be deeply frozen');
+      assert.throws(() => {
+        registry.entries.length = 0;
+      }, TypeError);
+      return ['lean@1', 'full@1'].map(profileId => ({ profileId, target: registry.targets[0] }));
+    },
+  });
+  assert.equal(plans.length, 2);
+  const canonical = compileContextProfile({ repoRoot: root, profileId: 'full', target: 'pi' });
+  assert.equal(canonical.selectedIds.length, 5, 'Expected the canonical registry to stay intact');
+}));
+
 test('a batch validates its inputs and never accepts a caller-built registry', () => withFixture(root => {
   for (const options of [
     { profileIds: 'lean@1' }, { targets: 'codex' }, { projections: [] }, { projections: () => 'nope' },

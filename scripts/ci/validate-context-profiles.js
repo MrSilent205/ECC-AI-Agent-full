@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 'use strict';
 
-const { loadContextRegistry, loadSkillTriggers } = require('../lib/context-pack-registry');
+const { loadSkillTriggers } = require('../lib/context-pack-registry');
 const { compileContextProfileBatch } = require('../lib/context-profiles');
 const { digestObject } = require('../lib/context-profile-support');
 
 function validate(repoRoot) {
-  const registry = loadContextRegistry({ repoRoot });
+  const profiles = ['lean@1', 'full@1'];
+  // One registry snapshot for every check and every profile/target projection:
+  // the batch loads the registry once and its snapshot is reused below instead
+  // of scanning the registry a second time.
+  const { registry, plans } = compileContextProfileBatch({ repoRoot, profileIds: profiles });
   const { triggers, manifest } = loadSkillTriggers({ repoRoot });
   const known = new Set(registry.entries.map(entry => entry.id));
   const unknown = Object.keys(triggers).filter(id => !known.has(id));
@@ -22,10 +26,6 @@ function validate(repoRoot) {
       if (phrase.length > 80) throw new Error(`Skill trigger exceeds 80 characters: ${phrase.slice(0, 40)}`);
     }
   }
-  const profiles = ['lean@1', 'full@1'];
-  // One registry snapshot for every profile/target projection: the projections
-  // are compiled in a single batch instead of reloading the registry per plan.
-  const { plans } = compileContextProfileBatch({ repoRoot, profileIds: profiles });
   return {
     status: 'success', skillCount: registry.entries.length,
     profileCount: profiles.length, targetCount: registry.targets.length,
