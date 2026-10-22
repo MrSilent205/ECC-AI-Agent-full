@@ -18,9 +18,13 @@ const TEST_RUNNER_PATTERN =
 
 /**
  * Flags that load or execute code the user never reviewed.
+ *
+ * `-p` also matches with its value glued to the flag (`pytest -pevil_module`):
+ * pytest reads the attached text as a plugin name to import, so the glued form
+ * has to be refused exactly like the space-separated one.
  */
 const UNSAFE_CODE_LOADING_FLAGS =
-  /(?:^|\s)(?:--plugin|--config|--exec|-exec|--require|-r|-p|--setupFiles|--import|--loader)(?:[=\s]|$)/
+  /(?:^|\s)(?:--plugin|--config|--exec|-exec|--require|-r|--setupFiles|--import|--loader)(?:[=\s]|$)|(?:^|\s)-p\S*/
 
 export function asResourceList(resources: string | string[] | undefined | null): string[] {
   if (Array.isArray(resources)) {

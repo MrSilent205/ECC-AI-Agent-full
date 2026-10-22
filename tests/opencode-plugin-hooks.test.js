@@ -476,6 +476,11 @@ async function main() {
           await captured.permission[0](vitestEvent)
           assert.strictEqual(vitestEvent.effect, "allow")
           assert.strictEqual(vitestEvent.message, "Test execution")
+
+          const goTestEvent = permissionEvent("bash", ["go test -run TestSomething"])
+          await captured.permission[0](goTestEvent)
+          assert.strictEqual(goTestEvent.effect, "allow")
+          assert.strictEqual(goTestEvent.message, "Test execution")
         }
       ),
     ],
@@ -536,6 +541,10 @@ async function main() {
             "npx jest --setupFiles ./x.js",
             "npx vitest --import ./x.js",
             "pytest --require ./x.py",
+            "pytest -pevil_module",
+            "pytest -pevil_module tests/",
+            "pytest -p=evil_module",
+            "pytest -p evil_module",
           ]) {
             const event = permissionEvent("bash", [command])
             await captured.permission[0](event)
