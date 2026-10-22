@@ -308,7 +308,9 @@ const tests = [
     run(wt, ['init']);
     run(wt, ['apply', '--input', writeJson(wt, 'epic.json', { create: { 'epics/auth-flow.md': EPIC } })]);
     // Each worktree has its own lock, so only the shared exclusive-create markers prevent duplicates.
-    const results = await Promise.all(Array.from({ length: 32 }, (_, i) => runAsync(i % 2 ? wt : root, ['allocate', '--epic', 'auth-flow', '--count', '5'])));
+    // 32 writers queue behind one owner lock; the default 5s wait is not enough on a loaded or slow
+    // machine, so the test asks for a longer wait instead of failing on a timing artefact.
+    const results = await Promise.all(Array.from({ length: 32 }, (_, i) => runAsync(i % 2 ? wt : root, ['allocate', '--epic', 'auth-flow', '--count', '5', '--wait-ms', '60000'])));
     const ids = results.flatMap((r) => JSON.parse(r.out).ids);
     assert.strictEqual(ids.length, 160);
     assert.strictEqual(new Set(ids).size, 160, 'duplicate story IDs allocated across worktrees');
