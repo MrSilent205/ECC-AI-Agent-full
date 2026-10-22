@@ -227,51 +227,52 @@ function asResourceList(resources: string | string[] | undefined | null): string
   return []
 }
 
+const READ_ONLY_ACTIONS = new Set(["read", "glob", "grep", "search", "list"])
+
+/** Validates bash resources against the allowlist; never auto-approves blindly. */
+function checkBashAllowlist(commands: string[], log: LogFn): PermissionDecision {
+  // No resource means nothing to validate: never auto-approve.
+  if (commands.length === 0 || commands.some((command) => command === "")) {
+    log("debug", "[ECC] Bash permission without a command requires user decision")
+    return { status: "ask", message: "" }
+  }
+
+  // Every resource must independently pass the same allowlist. A single unsafe
+  // or unrecognised command keeps the whole request at "ask".
+  for (const command of commands) {
+    if (UNSAFE_SHELL_SYNTAX.test(command)) {
+      log("debug", "[ECC] Bash permission with shell composition requires user decision")
+      return { status: "ask", message: "" }
+    }
+    if (UNSAFE_CODE_LOADING_FLAGS.test(command)) {
+      log("debug", "[ECC] Bash permission with a code-loading flag requires user decision")
+      return { status: "ask", message: "" }
+    }
+    if (FORMATTER_PATTERN.test(command) || TEST_RUNNER_PATTERN.test(command)) continue
+    log("debug", "[ECC] Bash permission command not allowlisted")
+    return { status: "ask", message: "" }
+  }
+
+  const isTest = commands.every((command) => TEST_RUNNER_PATTERN.test(command))
+  log("debug", isTest ? "[ECC] Auto-approved test execution" : "[ECC] Auto-approved formatter")
+  return { status: "allow", message: isTest ? "Test execution" : "Formatter execution" }
+}
+
 function createPermissionHook(
   log: LogFn
 ): (action: string, resources: string | string[] | undefined | null) => PermissionDecision {
   return (action, resources) => {
     try {
-      if (["read", "glob", "grep", "search", "list"].includes(action)) {
+      if (READ_ONLY_ACTIONS.has(action)) {
         log("debug", `[ECC] Auto-approved read-only action: ${action}`)
         return { status: "allow", message: "Read-only operation" }
       }
-
       if (action !== "bash") {
         log("debug", `[ECC] Permission requires user decision: ${action}`)
         return { status: "ask", message: "" }
       }
-
       const commands = asResourceList(resources).map((entry) => entry.trim())
-      // No resource means nothing to validate: never auto-approve.
-      if (commands.length === 0 || commands.some((command) => command === "")) {
-        log("debug", "[ECC] Bash permission without a command requires user decision")
-        return { status: "ask", message: "" }
-      }
-
-      // Every resource must independently pass the same allowlist. A single
-      // unsafe or unrecognised command keeps the whole request at "ask".
-      for (const command of commands) {
-        if (UNSAFE_SHELL_SYNTAX.test(command)) {
-          log("debug", "[ECC] Bash permission with shell composition requires user decision")
-          return { status: "ask", message: "" }
-        }
-        if (UNSAFE_CODE_LOADING_FLAGS.test(command)) {
-          log("debug", "[ECC] Bash permission with a code-loading flag requires user decision")
-          return { status: "ask", message: "" }
-        }
-        if (FORMATTER_PATTERN.test(command)) continue
-        if (TEST_RUNNER_PATTERN.test(command)) continue
-        log("debug", "[ECC] Bash permission command not allowlisted")
-        return { status: "ask", message: "" }
-      }
-
-      const isTest = commands.every((command) => TEST_RUNNER_PATTERN.test(command))
-      log("debug", isTest ? "[ECC] Auto-approved test execution" : "[ECC] Auto-approved formatter")
-      return {
-        status: "allow",
-        message: isTest ? "Test execution" : "Formatter execution",
-      }
+      return checkBashAllowlist(commands, log)
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error)
       log("error", `[ECC] Permission handling error for ${action}: ${msg}`)
@@ -371,22 +372,30 @@ function createShellEnvHook(
   }
 }
 
+function recordFileChange(
+  file: string,
+  kind: string,
+  store: {
+    changedFilesStore: ChangedFilesStore | undefined
+    editedFiles: Set<string>
+  }
+): void {
+  if (!file) return
+  const changeType = kind === "add" ? "added" : kind === "unlink" ? "deleted" : "modified"
+  store.changedFilesStore?.recordChange(file, changeType)
+  if (kind === "change" && file.match(/\.(ts|tsx|js|jsx)$/)) {
+    store.editedFiles.add(file)
+  }
+}
+
 function createSessionHooks(context: SessionHookContext): {
   onSessionCreated: (details: { directory?: string }) => void
   onSessionIdle: () => Promise<void>
   onSessionDeleted: () => void
   onFileChanged: (file: string, kind: string) => void
 } {
-  const {
-    projectDir,
-    log,
-    currentProfile,
-    shell,
-    hookEnabled,
-    editedFiles,
-    pendingToolChanges,
-    changedFilesStore,
-  } = context
+  const { projectDir, log, currentProfile, shell, hookEnabled, editedFiles } = context
+  const { pendingToolChanges, changedFilesStore } = context
 
   function onSessionCreated(details: { directory?: string }): void {
     if (!hookEnabled("session:start", ["minimal", "standard", "strict"])) return
@@ -415,12 +424,7 @@ function createSessionHooks(context: SessionHookContext): {
   }
 
   function onFileChanged(file: string, kind: string): void {
-    if (!file) return
-    const changeType = kind === "add" ? "added" : kind === "unlink" ? "deleted" : "modified"
-    changedFilesStore?.recordChange(file, changeType)
-    if (kind === "change" && file.match(/\.(ts|tsx|js|jsx)$/)) {
-      editedFiles.add(file)
-    }
+    recordFileChange(file, kind, { changedFilesStore, editedFiles })
   }
 
   return { onSessionCreated, onSessionIdle, onSessionDeleted, onFileChanged }
@@ -704,18 +708,7 @@ function createToolHooks(context: ToolHookContext): {
     callID: string | undefined
   ): Promise<void>
 } {
-  const {
-    projectDir,
-    log,
-    shell,
-    hookEnabled,
-    editedFiles,
-    pendingToolChanges,
-    changedFilesStore,
-    recordSkillRun,
-    sessionDir,
-  } = context
-  const formatter = createFormatter({ log, shell })
+  const formatter = createFormatter({ log: context.log, shell: context.shell })
 
   async function toolBefore(
     toolName: string,
@@ -723,8 +716,10 @@ function createToolHooks(context: ToolHookContext): {
     sessionID: string | undefined,
     callID: string | undefined
   ): Promise<void> {
-    await recordPendingWrite(toolName, input, sessionID, callID, sessionDir, pendingToolChanges)
-    warnBeforeTool(toolName, getFilePath(input), getCommand(input), hookEnabled, log)
+    await recordPendingWrite(
+      toolName, input, sessionID, callID, context.sessionDir, context.pendingToolChanges
+    )
+    warnBeforeTool(toolName, getFilePath(input), getCommand(input), context.hookEnabled, context.log)
   }
 
   async function toolAfter(
@@ -735,10 +730,13 @@ function createToolHooks(context: ToolHookContext): {
     callID: string | undefined
   ): Promise<void> {
     const filePath = getFilePath(input)
+    const { changedFilesStore, pendingToolChanges, hookEnabled, log } = context
     recordToolChange(toolName, filePath, callID, changedFilesStore, pendingToolChanges)
-    await warnAfterEdit(toolName, filePath, projectDir, hookEnabled, editedFiles, log, formatter)
+    await warnAfterEdit(
+      toolName, filePath, context.projectDir, hookEnabled, context.editedFiles, log, formatter
+    )
     warnAfterBash(toolName, getCommand(input), hookEnabled, log)
-    trackSkillRun(toolName, input, output, hookEnabled, recordSkillRun)
+    trackSkillRun(toolName, input, output, hookEnabled, context.recordSkillRun)
   }
 
   return { toolBefore, toolAfter }
@@ -886,30 +884,37 @@ function disposeRuntime(
   sessionDirs.clear()
 }
 
-export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccRuntime> {
-  const { projectDir, log } = options
+interface RuntimeState {
+  editedFiles: Set<string>
+  pendingToolChanges: Map<string, { path: string; type: "added" | "modified" }>
+  sessionDirs: Map<string, string>
+}
 
-  const editedFiles = new Set<string>()
-  const pendingToolChanges = new Map<string, { path: string; type: "added" | "modified" }>()
-  const sessionDirs = new Map<string, string>()
+function createRuntimeState(): RuntimeState {
+  return {
+    editedFiles: new Set<string>(),
+    pendingToolChanges: new Map<string, { path: string; type: "added" | "modified" }>(),
+    sessionDirs: new Map<string, string>(),
+  }
+}
 
-  const currentProfile = normalizeProfile(process.env.ECC_HOOK_PROFILE)
-  const hookEnabled = createHookGate(currentProfile)
+interface RuntimeHookContext extends RuntimeState {
+  projectDir: string
+  log: LogFn
+  shell: ShellFn | undefined
+  currentProfile: HookProfile
+  hookEnabled: HookGate
+  eccRoot: string | null
+  changedFilesStore: ChangedFilesStore | undefined
+  recordSkillRun: ((payload: unknown) => void) | undefined
+  sessionDir: (sessionID: string | undefined) => Promise<string>
+}
 
-  const shell = options.shell ?? getShell()
+type RuntimeHooks = Omit<EccRuntime, "projectDir" | "currentProfile" | "dispose">
 
-  const sessionDir = createSessionDirResolver(projectDir, sessionDirs, options.resolveSessionDir)
-
-  // Lazily loaded changed-files store.
-  // Lazily loaded changed-files store.
-  const changedFilesStore = await loadChangedFilesStore(projectDir, log)
-
-  // Skill telemetry tracker.
-  const trackerRoot = findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.skillTracker)
-  const eccRoot =
-    findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.resolver) ??
-    findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.root)
-  const recordSkillRun = await loadSkillTracker(trackerRoot, log)
+function createRuntimeHooks(context: RuntimeHookContext): RuntimeHooks {
+  const { projectDir, log, shell, currentProfile, hookEnabled, eccRoot } = context
+  const { changedFilesStore, recordSkillRun, sessionDir, editedFiles, pendingToolChanges } = context
 
   const { toolBefore, toolAfter } = createToolHooks({
     projectDir,
@@ -923,39 +928,62 @@ export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccR
     sessionDir,
   })
 
-  const shellEnv = createShellEnvHook({ projectDir, currentProfile, eccRoot })
-
-  const permissionDecision = createPermissionHook(log)
-
-  const compactionText = createCompactionHook(editedFiles, eccRoot)
-
-  const { onSessionCreated, onSessionIdle, onSessionDeleted, onFileChanged } = createSessionHooks({
-    projectDir,
-    log,
-    currentProfile,
-    shell,
-    hookEnabled,
-    editedFiles,
-    pendingToolChanges,
-    changedFilesStore,
-  })
-
-  const loadRunners = (): Promise<ToolRunners | undefined> => loadToolRunners(log)
-
+  const { onSessionCreated, onSessionIdle, onSessionDeleted, onFileChanged } =
+    createSessionHooks({
+      projectDir,
+      log,
+      currentProfile,
+      shell,
+      hookEnabled,
+      editedFiles,
+      pendingToolChanges,
+      changedFilesStore,
+    })
 
   return {
-    projectDir,
-    currentProfile,
     toolBefore,
     toolAfter,
-    shellEnv,
-    permissionDecision,
-    compactionText,
+    shellEnv: createShellEnvHook({ projectDir, currentProfile, eccRoot }),
+    permissionDecision: createPermissionHook(log),
+    compactionText: createCompactionHook(editedFiles, eccRoot),
     onSessionCreated,
     onSessionIdle,
     onSessionDeleted,
     onFileChanged,
-    loadToolRunners: loadRunners,
-    dispose: () => disposeRuntime(editedFiles, pendingToolChanges, sessionDirs),
+    loadToolRunners: () => loadToolRunners(log),
+  }
+}
+
+export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccRuntime> {
+  const { projectDir, log } = options
+  const state = createRuntimeState()
+  const currentProfile = normalizeProfile(process.env.ECC_HOOK_PROFILE)
+  const shell = options.shell ?? getShell()
+
+  const changedFilesStore = await loadChangedFilesStore(projectDir, log)
+  const trackerRoot = findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.skillTracker)
+  const eccRoot =
+    findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.resolver) ??
+    findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.root)
+  const recordSkillRun = await loadSkillTracker(trackerRoot, log)
+
+  const hooks = createRuntimeHooks({
+    ...state,
+    projectDir,
+    log,
+    shell,
+    currentProfile,
+    hookEnabled: createHookGate(currentProfile),
+    eccRoot,
+    changedFilesStore,
+    recordSkillRun,
+    sessionDir: createSessionDirResolver(projectDir, state.sessionDirs, options.resolveSessionDir),
+  })
+
+  return {
+    projectDir,
+    currentProfile,
+    ...hooks,
+    dispose: () => disposeRuntime(state.editedFiles, state.pendingToolChanges, state.sessionDirs),
   }
 }
