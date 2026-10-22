@@ -33,13 +33,14 @@ function harness(doc, mode = 'ok') {
   assert.ok(block, 'document must retain a runnable seller replay guard');
   const store = new Set();
   const redis = {
-    options: null, listeners: {}, sets: 0, badOptions: 0,
+    options: null, listeners: {}, sets: 0, badOptions: 0, lastUntil: 0,
     on(event, fn) { this.listeners[event] = fn; return this; },
     connect: () => Promise.reject(new Error('ECONNREFUSED')),
     async set(key, value, opts) {
       this.sets++;
       // Recorded, not asserted: the guard's own fail-open catch would hide a throw.
-      if (opts.NX !== true || opts.EX !== 900) this.badOptions++;
+      if (opts.condition !== 'NX' || opts.expiration?.type !== 'EXAT') this.badOptions++;
+      this.lastUntil = opts.expiration?.value;
       if (mode === 'offline') throw new Error('The client is offline');
       if (mode === 'hang') return new Promise(() => {});
       if (store.has(key)) return null;
@@ -77,11 +78,11 @@ function harness(doc, mode = 'ok') {
 }
 
 const b64 = value => Buffer.from(typeof value === 'string' ? value : JSON.stringify(value)).toString('base64');
-function evm(nonce, { asset = USDC_BASE, indent } = {}) {
+function evm(nonce, { asset = USDC_BASE, indent, validBefore } = {}) {
   return b64(JSON.stringify({
     x402Version: 2,
     accepted: { scheme: 'exact', network: 'eip155:8453', asset },
-    payload: { signature: '0x00', authorization: { from: '0xAbC0000000000000000000000000000000000001', nonce } },
+    payload: { signature: '0x00', authorization: { from: '0xAbC0000000000000000000000000000000000001', nonce, validBefore } },
   }, null, indent));
 }
 function svm(feeSlotByte, message = 'payer-signed-message') {
@@ -100,7 +101,7 @@ for (const doc of DOCS) {
     const refused = results.filter(r => r.status === 402);
     assert.equal(refused.length, 2);
     for (const r of refused) assert.equal(r.body.error, 'payment_replayed');
-    assert.equal(h.redis.badOptions, 0, 'claims must use SET NX with the documented TTL');
+    assert.equal(h.redis.badOptions, 0, 'claims must use SET NX with an absolute expiry');
   });
   add('keys EVM payments on asset, payer and nonce, not header bytes', async () => {
     const h = harness(doc);
@@ -120,6 +121,18 @@ for (const doc of DOCS) {
     assert.ok(h.redis.options.commandsQueueMaxLength > 0, 'pending claims must be bounded');
     assert.equal(typeof h.redis.listeners.error, 'function');
     h.redis.listeners.error(new Error('socket closed'));
+  });
+  add('keeps a claim until the signed authorization expires', async () => {
+    const h = harness(doc);
+    const now = () => Math.floor(Date.now() / 1000);
+    await h.call(evm('0x31', { validBefore: String(now() + 3600) }));
+    assert.ok(Math.abs(h.redis.lastUntil - (now() + 3660)) <= 2, `1 h authorization: ${h.redis.lastUntil - now()} s`);
+    await h.call(evm('0x32', { validBefore: String(now() + 60) }));
+    assert.ok(Math.abs(h.redis.lastUntil - (now() + 900)) <= 2, `short authorization keeps the floor: ${h.redis.lastUntil - now()} s`);
+    await h.call(evm('0x33', { validBefore: (2n ** 256n).toString() }));
+    assert.ok(Math.abs(h.redis.lastUntil - (now() + 366 * 86400)) <= 2, 'absurd validBefore is capped');
+    await h.call(svm(3));
+    assert.ok(Math.abs(h.redis.lastUntil - (now() + 900)) <= 2, 'Solana uses the floor');
   });
   add('fails open when the store is offline', async () => {
     const h = harness(doc, 'offline');

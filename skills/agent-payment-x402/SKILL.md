@@ -330,7 +330,8 @@ const redis = createClient({
 redis.on("error", (err) => console.warn(`replay store: ${err.message}`));
 redis.connect().catch(() => {});
 
-const CLAIM_TTL_S = 900;          // longer than maxTimeoutSeconds plus your slowest handler run
+const CLAIM_MIN_S = 900;          // longer than maxTimeoutSeconds plus your slowest handler run
+const CLAIM_MAX_S = 366 * 86_400; // ceiling for a signer-chosen validBefore
 const CLAIM_TIMEOUT_MS = 250;     // a slow store must not stall paid requests (the command itself is not cancelled)
 const MAX_HEADER_BYTES = 16_384;  // claims are stored before anything is verified
 
@@ -353,12 +354,28 @@ function claimKey(header: string): string {
       // copy with different bytes there is still the same payment. The message
       // already names the mint.
       const tx = getTransactionDecoder().decode(getBase64Encoder().encode(p.payload.transaction));
-      return `x402:${network}:${createHash("sha256").update(tx.messageBytes).digest("hex")}`;
+      return `x402:${network}:${createHash("sha256").update(new Uint8Array(tx.messageBytes)).digest("hex")}`;
     }
   } catch {
     // Unparseable: fall through to the raw header, which still catches exact copies.
   }
   return `x402:raw:${createHash("sha256").update(header).digest("hex")}`;
+}
+
+// Keep a claim until the authorization itself expires. The signer picks the
+// EIP-3009 validBefore and verification does not cap it at maxTimeoutSeconds,
+// so a claim dropped earlier would let a copy of a still-valid authorization
+// whose settlement failed run the handler again.
+function claimUntil(header: string): number {
+  const now = Math.floor(Date.now() / 1000);
+  let validBefore = 0;
+  try {
+    const p = JSON.parse(Buffer.from(header, "base64").toString("utf8"));
+    validBefore = Number(p.payload?.authorization?.validBefore) || 0;
+  } catch {
+    // No EVM expiry to honour: the floor applies.
+  }
+  return Math.min(Math.max(now + CLAIM_MIN_S, validBefore + 60), now + CLAIM_MAX_S);
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -378,7 +395,10 @@ async function replayGuard(req, res, next) {
   let first = true;
   try {
     // NX is atomic: of two simultaneous copies exactly one wins.
-    const claimed = redis.set(claimKey(header), "1", { NX: true, EX: CLAIM_TTL_S });
+    const claimed = redis.set(claimKey(header), "1", {
+      condition: "NX",
+      expiration: { type: "EXAT", value: claimUntil(header) },
+    });
     first = (await withTimeout(claimed, CLAIM_TIMEOUT_MS)) === "OK";
   } catch {
     // Fail open: the facilitator still refuses a second settlement, so a store
