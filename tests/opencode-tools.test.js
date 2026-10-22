@@ -7,7 +7,7 @@
  * The tools are framework-free: each module exports a named object
  * (`{ description, execute }`) instead of a default export, so the loader
  * below resolves the export by name and fails loudly when a tool module
- * cannot be loaded â€” a missing tool must never look like a passing suite.
+ * cannot be loaded - a missing tool must never look like a passing suite.
  */
 
 const assert = require("node:assert")
@@ -21,17 +21,17 @@ function runTest(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  âœ“ ${name}`)
+      console.log(`  PASS ${name}`)
       return { passed: 1, failed: 0 }
     })
     .catch((error) => {
-      console.log(`  âœ— ${name}`)
+      console.log(`  FAIL ${name}`)
       console.error(`    ${error.stack || error.message}`)
       return { passed: 0, failed: 1 }
     })
 }
 
-// Built tool file â†’ the named export that carries the tool definition.
+// Built tool file -> the named export that carries the tool definition.
 const TOOL_EXPORTS = {
   "format-code.js": "formatCode",
   "lint-check.js": "lintCheck",

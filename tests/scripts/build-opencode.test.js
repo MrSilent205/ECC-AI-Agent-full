@@ -179,7 +179,7 @@ function main() {
       }
       assert.deepStrictEqual(unresolved, [])
     }],
-    ["built OpenCode entry exports only the plugin function", () => {
+    ["built OpenCode entry exports only the v2 plugin object", () => {
       const check = `
         const assert = require("assert")
         const { pathToFileURL } = require("url")
@@ -196,6 +196,7 @@ function main() {
            assert.ok(mod.default && typeof mod.default === "object")
            assert.strictEqual(typeof mod.default.id, "string")
            assert.strictEqual(typeof mod.default.setup, "function")
+        assert.strictEqual(mod.default.server, undefined, "v1 server export must stay removed")
          }
 
         main().catch((error) => {

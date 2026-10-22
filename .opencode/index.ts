@@ -14,6 +14,6 @@
  * @packageDocumentation
  */
 
-// Only the default plugin function may be exported: OpenCode's legacy loader
-// iterates every module export and throws if any is not a plugin function.
+// Only the default plugin object may be exported: OpenCode iterates every
+// module export and expects a plugin object ({ id, setup }), never a bare function.
 export { default } from "./plugins/index.ts"
