@@ -305,6 +305,116 @@ curl -s https://api.mainnet-beta.solana.com -X POST -H 'Content-Type: applicatio
 
 これは新規プロビジョニングされたウォレットやカストディアルウォレットへの支払いで最も問題になりやすい。そうしたウォレットは対象アセットの ATA をまだ持っていないことが多い。
 
+**セラー：1 つの支払い承認につきルートは 1 回だけ実行する。** ミドルウェアは支払いを検証し、ハンドラーを実行し、その後で決済する。検証は承認を消費しない（消費するのは決済）ため、同じ署名済み支払いを同時に複数回送ると、毎回検証を通り、毎回ハンドラーが実行される。ファシリテーターが決済するのは 1 つのコピーだけで、残りはレスポンスなしの 402 を受け取るので、誰も無料で出力を得ることはない。しかしハンドラー内の副作用（LLM 呼び出し、ジョブのキュー投入、オンチェーントランザクション）はコピーごとに発生する。本番のセラー（Python `x402` 2.9.0、FastAPI）では、1 つの承認を同時に 3 回送ると、ハンドラーが 3 回実行され、決済は 1 回だった。ハンドラー内の有料呼び出しカウンターも同じように売上を過大に数えるので、決済後に数えること。検証から決済までのより広い競合については [x402#1169](https://github.com/x402-foundation/x402/issues/1169) で議論されている。
+
+各承認を、支払いミドルウェアが実行される前に、アトミックな挿入で 1 回だけ取得する：
+
+```typescript
+import { createHash } from "node:crypto";
+import { getBase64Encoder, getTransactionDecoder } from "@solana/kit";
+import { createClient } from "redis";
+
+// The guard must never be what takes the seller down. With the offline queue
+// disabled, a command sent while disconnected fails at once instead of waiting;
+// the queue cap does the same when the store is connected but not replying, so
+// abandoned claims cannot pile up; the error listener stops a client error from
+// crashing the process; and the connection is made in the background, so route
+// registration never waits on it.
+const redis = createClient({
+  url: process.env.REDIS_URL,
+  disableOfflineQueue: true,
+  commandsQueueMaxLength: 1_000,
+  socket: { connectTimeout: 2_000 },
+});
+redis.on("error", (err) => console.warn(`replay store: ${err.message}`));
+redis.connect().catch(() => {});
+
+const CLAIM_MIN_S = 900;          // longer than maxTimeoutSeconds plus your slowest handler run
+const CLAIM_MAX_S = 366 * 86_400; // ceiling for a signer-chosen validBefore
+const CLAIM_TIMEOUT_MS = 250;     // a slow store must not stall paid requests (the command itself is not cancelled)
+const MAX_HEADER_BYTES = 16_384;  // claims are stored before anything is verified
+
+// One key per authorization, not per header: re-encoding the same signed
+// payment must not make it look new.
+function claimKey(header: string): string {
+  try {
+    const p = JSON.parse(Buffer.from(header, "base64").toString("utf8"));
+    const network = p.accepted?.network ?? "";
+    const auth = p.payload?.authorization;
+    if (auth?.from && auth?.nonce) {
+      // EVM exact (EIP-3009): each token contract accepts a (from, nonce) once,
+      // so the asset is part of the authorization's identity.
+      const asset = String(p.accepted?.asset ?? "").toLowerCase();
+      return `x402:${network}:${asset}:${String(auth.from).toLowerCase()}:${String(auth.nonce).toLowerCase()}`;
+    }
+    if (typeof p.payload?.transaction === "string") {
+      // SVM exact: hash the message the payer signed, not the whole transaction.
+      // The fee payer's signature slot sits outside the payer's signature, so a
+      // copy with different bytes there is still the same payment. The message
+      // already names the mint.
+      const tx = getTransactionDecoder().decode(getBase64Encoder().encode(p.payload.transaction));
+      return `x402:${network}:${createHash("sha256").update(new Uint8Array(tx.messageBytes)).digest("hex")}`;
+    }
+  } catch {
+    // Unparseable: fall through to the raw header, which still catches exact copies.
+  }
+  return `x402:raw:${createHash("sha256").update(header).digest("hex")}`;
+}
+
+// Keep a claim until the authorization itself expires. The signer picks the
+// EIP-3009 validBefore and verification does not cap it at maxTimeoutSeconds,
+// so a claim dropped earlier would let a copy of a still-valid authorization
+// whose settlement failed run the handler again.
+function claimUntil(header: string): number {
+  const now = Math.floor(Date.now() / 1000);
+  let validBefore = 0;
+  try {
+    const p = JSON.parse(Buffer.from(header, "base64").toString("utf8"));
+    validBefore = Number(p.payload?.authorization?.validBefore) || 0;
+  } catch {
+    // No EVM expiry to honour: the floor applies.
+  }
+  return Math.min(Math.max(now + CLAIM_MIN_S, validBefore + 60), now + CLAIM_MAX_S);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(reject, ms, new Error("timeout")).unref()),
+  ]);
+}
+
+// Register on paid routes, before the x402 payment middleware.
+async function replayGuard(req, res, next) {
+  const header = req.get("payment-signature") ?? req.get("x-payment");
+  if (!header) return next();
+  if (header.length > MAX_HEADER_BYTES) {
+    return res.status(431).json({ error: "payment_header_too_large" });
+  }
+  let first = true;
+  try {
+    // NX is atomic: of two simultaneous copies exactly one wins.
+    const claimed = redis.set(claimKey(header), "1", {
+      condition: "NX",
+      expiration: { type: "EXAT", value: claimUntil(header) },
+    });
+    first = (await withTimeout(claimed, CLAIM_TIMEOUT_MS)) === "OK";
+  } catch {
+    // Fail open: the facilitator still refuses a second settlement, so a store
+    // outage degrades to the unguarded behaviour instead of blocking buyers.
+  }
+  if (!first) {
+    return res.status(402).json({
+      error: "payment_replayed",
+      detail: "This payment authorization was already presented. Sign a fresh one for each request.",
+    });
+  }
+  next();
+}
+```
+
+各クレームはファシリテーターが支払いを検証する前に書き込まれるので、この経路は認証されていない書き込みと同様に扱うこと。ヘッダーの上限で 1 リクエストが保存できる量を制限し、ルートは通常のレート制限の内側に置く。条件付き挿入ができるストアなら何でもよい：DynamoDB の `attribute_not_exists` 付き `PutItem`、または Postgres のユニークインデックス。クライアント側のコストは、同じ署名で再試行したリクエスト（たとえば 5xx の後、決済がスキップされた場合）が拒否されるようになることだ。アップストリームのクライアントは 402 ごとに新しい承認に署名する。これが防ぐのは 1 つの承認の重複コピーだけである。検証と決済の間に支払いを無効にする支払者（たとえば資金を移動する）は、依然としてハンドラーを 1 回実行させられる。高コストなルートでは、作業の前に資金を確保すること。
+
 **発見。** x402 バザール拡張を実装するファシリテーターは `/discovery/resources` エンドポイントを公開する — CDP カタログは `https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources`、PayAI カタログは `https://facilitator.payai.network/discovery/resources` で照会できる。Solana で支払い可能なサービスには、Solana Foundation のキュレーションカタログである [pay.sh](https://pay.sh) もある。
 
 ## 例
