@@ -1390,6 +1390,35 @@
       "stability": "beta"
     },
     {
+      "id": "documentation-module-governance",
+      "kind": "skills",
+      "description": "Optional module-local instructions and documentation ownership workflow.",
+      "paths": [
+        "skills/module-governance"
+      ],
+      "targets": [
+        "claude",
+        "claude-project",
+        "cursor",
+        "antigravity",
+        "codex",
+        "opencode",
+        "codebuddy",
+        "joycode",
+        "qwen",
+        "zed"
+      ],
+      "dependencies": [
+        "documentation-context",
+        "documentation-governance",
+        "documentation-change-impact",
+        "framework-language"
+      ],
+      "defaultInstall": false,
+      "cost": "light",
+      "stability": "beta"
+    },
+    {
       "id": "documentation-test-regression",
       "kind": "skills",
       "description": "Optional test-collaboration and module-regression workflow.",
