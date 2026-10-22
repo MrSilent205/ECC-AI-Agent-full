@@ -4,7 +4,7 @@
 
 ## فایل PDF
 
-**`ECC-Capabilities-FA.pdf`** — سند کامل همهٔ agents، commands، skills، tools، plugins، hooks و MCP servers نصب‌شده از ECC روی OpenCode با توضیحات فارسی و روش استفاده.
+**[ECC-Capabilities-FA.pdf](ECC-Capabilities-FA.pdf)** — سند کامل همهٔ agents، commands، skills، tools، plugins، hooks و MCP servers نصب‌شده از ECC روی OpenCode با توضیحات فارسی و روش استفاده.
 
 هر کس که راهنمای این ریپازیتوری را به زبان پارسی نیاز دارد می‌تواند این فایل را دانلود کند.
 

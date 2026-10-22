@@ -187,330 +187,46 @@ function hasProjectFile(relativePath: string, base: string): boolean {
   }
 }
 
-export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccRuntime> {
-  const { projectDir, log } = options
+type ChangedFilesStore = typeof import("../lib/changed-files-store.ts")
 
-  const editedFiles = new Set<string>()
-  const pendingToolChanges = new Map<string, { path: string; type: "added" | "modified" }>()
-  const sessionDirs = new Map<string, string>()
+interface ShellEnvContext {
+  projectDir: string
+  currentProfile: HookProfile
+  eccRoot: string | null
+}
 
-  const currentProfile = normalizeProfile(process.env.ECC_HOOK_PROFILE)
-  const disabledHooks = new Set(
-    (process.env.ECC_DISABLED_HOOKS || "")
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean)
-  )
-  const profileOrder: Record<HookProfile, number> = {
-    minimal: 0,
-    standard: 1,
-    strict: 2,
+interface SessionHookContext {
+  projectDir: string
+  log: LogFn
+  currentProfile: HookProfile
+  shell: ShellFn | undefined
+  hookEnabled: (hookId: string, required?: HookProfile | HookProfile[]) => boolean
+  editedFiles: Set<string>
+  pendingToolChanges: Map<string, { path: string; type: "added" | "modified" }>
+  changedFilesStore: ChangedFilesStore | undefined
+}
+
+/** Shell syntax that can chain, substitute, or redirect past an allowlist. */
+const UNSAFE_SHELL_SYNTAX = /[;&|`$<>\n\r(){}]/
+
+const FORMATTER_PATTERN =
+  /^(npx )?(@biomejs\/biome|prettier|black|gofmt|rustfmt|swift-format)(\s+[^\s;&|`$<>(){}\\]+)*$/
+
+const TEST_RUNNER_PATTERN =
+  /^(npm test|npx vitest|npx jest|pytest|go test|cargo test)(\s+[-A-Za-z0-9_./=:@,+]+)*$/
+
+function asResourceList(resources: string | string[] | undefined | null): string[] {
+  if (Array.isArray(resources)) {
+    return resources.map((entry) => String(entry))
   }
-  const hookEnabled = (
-    hookId: string,
-    required: HookProfile | HookProfile[] = "standard"
-  ): boolean => {
-    if (disabledHooks.has(hookId)) return false
-    const need = Array.isArray(required) ? required : [required]
-    return need.some((entry) => profileOrder[currentProfile] >= profileOrder[entry])
-  }
+  if (typeof resources === "string") return resources === "" ? [] : [resources]
+  return []
+}
 
-  const shell = options.shell ?? getShell()
-
-  async function sessionDir(sessionID: string | undefined): Promise<string> {
-    if (!sessionID) return projectDir
-    const cached = sessionDirs.get(sessionID)
-    if (cached) return cached
-    try {
-      const resolved = await options.resolveSessionDir(sessionID)
-      if (resolved) {
-        sessionDirs.set(sessionID, resolved)
-        return resolved
-      }
-    } catch {
-      // fall through to the plugin location directory
-    }
-    return projectDir
-  }
-
-  // Lazily loaded changed-files store.
-  let changedFilesStore: typeof import("../lib/changed-files-store.ts") | undefined
-  try {
-    const store = await import("../lib/changed-files-store.ts")
-    store.initStore(projectDir)
-    changedFilesStore = store
-  } catch {
-    log(
-      "warn",
-      "[ECC] changed-files tracking disabled: could not load the changed-files store. " +
-        "Run `ecc repair --target opencode` to restore the missing files. Other ECC hooks are unaffected."
-    )
-  }
-
-  // Skill telemetry tracker.
-  type SkillRunTrackerModule = { run?: (payload: unknown) => void }
-  let recordSkillRun: ((payload: unknown) => void) | undefined
-  const trackerRoot = findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.skillTracker)
-  const eccRoot =
-    findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.resolver) ??
-    findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.root)
-  try {
-    const trackerPath = trackerRoot
-      ? path.join(trackerRoot, "scripts", "hooks", "skill-run-tracker.js")
-      : null
-    if (!trackerPath || !fs.existsSync(trackerPath)) {
-      throw new Error("skill-run-tracker.js not found")
-    }
-    const loaded = (await import(pathToFileURL(trackerPath).href)) as SkillRunTrackerModule & {
-      default?: SkillRunTrackerModule
-    }
-    const entry = typeof loaded.run === "function" ? loaded : loaded.default
-    if (!entry || typeof entry.run !== "function") {
-      throw new Error("skill-run-tracker.js exposes no run()")
-    }
-    recordSkillRun = entry.run
-  } catch {
-    log(
-      "warn",
-      "[ECC] skill-run telemetry disabled: could not load scripts/hooks/skill-run-tracker.js. " +
-        "Run `ecc repair --target opencode` to restore the missing files. Other ECC hooks are unaffected."
-    )
-  }
-
-  async function runPrettier(filePath: string): Promise<void> {
-    if (!shell) {
-      log("debug", `[ECC] Skipping prettier (no shell runtime): ${filePath}`)
-      return
-    }
-    try {
-      await shell`prettier --write ${filePath}`
-      log("info", `[ECC] Formatted: ${filePath}`)
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error)
-      log("debug", `[ECC] Prettier formatting failed for ${filePath}: ${msg}`)
-    }
-  }
-
-  async function runTypeCheck(): Promise<void> {
-    if (!shell) {
-      log("debug", "[ECC] Skipping tsc check (no shell runtime)")
-      return
-    }
-    try {
-      await shell`npx tsc --noEmit`
-      log("info", "[ECC] TypeScript check passed")
-    } catch (error: unknown) {
-      log("warn", "[ECC] TypeScript errors detected")
-      const stdout = (error as { stdout?: unknown }).stdout
-      if (typeof stdout === "string") {
-        for (const line of stdout.split("\n").slice(0, 5)) log("warn", `  ${line}`)
-      } else {
-        const msg = error instanceof Error ? error.message : String(error)
-        if (msg) log("warn", `  ${msg.split("\n")[0]}`)
-      }
-    }
-  }
-
-  async function toolBefore(
-    toolName: string,
-    input: unknown,
-    sessionID: string | undefined,
-    callID: string | undefined
-  ): Promise<void> {
-    const filePath = getFilePath(input)
-
-    if (toolName === "write" && filePath) {
-      const base = await sessionDir(sessionID)
-      const absPath = resolvePath(filePath, base)
-      let type: "added" | "modified" = "modified"
-      try {
-        type = fs.existsSync(absPath) ? "modified" : "added"
-      } catch {
-        type = "modified"
-      }
-      pendingToolChanges.set(String(callID), { path: filePath, type })
-    }
-
-    const command = getCommand(input)
-
-    if (
-      hookEnabled("pre:bash:git-push-reminder", "strict") &&
-      toolName === "bash" &&
-      command.includes("git push")
-    ) {
-      log("info", "[ECC] Remember to review changes before pushing: git diff origin/main...HEAD")
-    }
-
-    if (
-      hookEnabled("pre:write:doc-file-warning", ["standard", "strict"]) &&
-      toolName === "write" &&
-      typeof filePath === "string" &&
-      filePath.match(/\.(md|txt)$/i) &&
-      !filePath.includes("README") &&
-      !filePath.includes("CHANGELOG") &&
-      !filePath.includes("LICENSE") &&
-      !filePath.includes("CONTRIBUTING")
-    ) {
-      log("warn", `[ECC] Creating ${filePath} - consider if this documentation is necessary`)
-    }
-
-    if (hookEnabled("pre:bash:tmux-reminder", "strict") && toolName === "bash") {
-      if (
-        command.match(/^(npm|pnpm|yarn|bun)\s+(install|build|test|run)/) ||
-        command.match(/^cargo\s+(build|test|run)/) ||
-        command.match(/^go\s+(build|test|run)/)
-      ) {
-        log("info", "[ECC] Long-running command detected - consider using background execution")
-      }
-    }
-  }
-
-  async function toolAfter(
-    toolName: string,
-    input: unknown,
-    output: unknown,
-    sessionID: string | undefined,
-    callID: string | undefined
-  ): Promise<void> {
-    const filePath = getFilePath(input)
-
-    if (toolName === "edit" && filePath) {
-      changedFilesStore?.recordChange(filePath, "modified")
-    }
-    if (toolName === "write" && filePath) {
-      const key = String(callID)
-      const pending = pendingToolChanges.get(key)
-      if (pending) {
-        changedFilesStore?.recordChange(pending.path, pending.type)
-        pendingToolChanges.delete(key)
-      } else {
-        changedFilesStore?.recordChange(filePath, "modified")
-      }
-    }
-
-    if ((toolName === "edit" || toolName === "write") && filePath) {
-      editedFiles.add(filePath)
-
-      if (hookEnabled("post:edit:format", ["strict"]) && filePath.match(/\.(ts|tsx|js|jsx)$/)) {
-        await runPrettier(filePath)
-      }
-
-      if (
-        hookEnabled("post:edit:console-warn", ["standard", "strict"]) &&
-        filePath.match(/\.(ts|tsx|js|jsx)$/)
-      ) {
-        const count = countConsoleLogs(resolvePath(filePath, projectDir))
-        if (count > 0) {
-          log("warn", `[ECC] console.log found in ${filePath} (${count} occurrence${count > 1 ? "s" : ""})`)
-        }
-      }
-    }
-
-    if (
-      hookEnabled("post:edit:typecheck", ["strict"]) &&
-      toolName === "edit" &&
-      typeof filePath === "string" &&
-      filePath.match(/\.tsx?$/)
-    ) {
-      await runTypeCheck()
-    }
-
-    const command = getCommand(input)
-    if (
-      hookEnabled("post:bash:pr-created", ["standard", "strict"]) &&
-      toolName === "bash" &&
-      command.includes("gh pr create")
-    ) {
-      log("info", "[ECC] PR created - check GitHub Actions status")
-    }
-
-    // Skill telemetry (#2463)
-    if (
-      hookEnabled("post:skill:track", ["standard", "strict"]) &&
-      typeof toolName === "string" &&
-      toolName.trim().toLowerCase() === "skill"
-    ) {
-      try {
-        recordSkillRun?.({
-          tool_name: "Skill",
-          tool_input: input ?? {},
-          tool_response: output,
-        })
-      } catch {
-        // Telemetry is best-effort; never let it affect the tool result.
-      }
-    }
-  }
-
-  function shellEnv(cwd: string | undefined, env: Record<string, string>): void {
-    if (!env || typeof env !== "object") return
-    const base = cwd || projectDir
-    const eccVersion = getECCVersion(eccRoot)
-    env.ECC_VERSION = eccVersion
-    env.ECC_PLUGIN = "true"
-    env.ECC_HOOK_PROFILE = currentProfile
-    env.ECC_DISABLED_HOOKS = process.env.ECC_DISABLED_HOOKS || ""
-    env.PROJECT_ROOT = base
-
-    const lockfiles: Record<string, string> = {
-      "bun.lockb": "bun",
-      "pnpm-lock.yaml": "pnpm",
-      "yarn.lock": "yarn",
-      "package-lock.json": "npm",
-    }
-    for (const [lockfile, pm] of Object.entries(lockfiles)) {
-      if (hasProjectFile(lockfile, base)) {
-        env.PACKAGE_MANAGER = pm
-        break
-      }
-    }
-
-    const langDetectors: Record<string, string> = {
-      "tsconfig.json": "typescript",
-      "go.mod": "go",
-      "pyproject.toml": "python",
-      "Cargo.toml": "rust",
-      "Package.swift": "swift",
-    }
-    const detected: string[] = []
-    for (const [file, lang] of Object.entries(langDetectors)) {
-      if (hasProjectFile(file, base)) detected.push(lang)
-    }
-    if (detected.length > 0) {
-      env.DETECTED_LANGUAGES = detected.join(",")
-      env.PRIMARY_LANGUAGE = detected[0]
-    }
-
-    // Export CLAUDE_PLUGIN_ROOT so commands can resolve ECC root (V1 preserved).
-    const rootAlreadySet = Boolean(
-      (process.env.CLAUDE_PLUGIN_ROOT || "").trim() || (env.CLAUDE_PLUGIN_ROOT || "").trim()
-    )
-    if (eccRoot && !rootAlreadySet) {
-      env.CLAUDE_PLUGIN_ROOT = eccRoot
-    }
-  }
-
-  /** Shell syntax that can chain, substitute, or redirect past an allowlist. */
-  const UNSAFE_SHELL_SYNTAX = /[;&|`$<>\n\r(){}]/
-
-  const FORMATTER_PATTERN =
-    /^(npx )?(@biomejs\/biome|prettier|black|gofmt|rustfmt|swift-format)(\s+[^\s;&|`$<>(){}\\]+)*$/
-
-  const TEST_RUNNER_PATTERN =
-    /^(npm test|npx vitest|npx jest|pytest|go test|cargo test)(\s+[-A-Za-z0-9_./=:@,+]+)*$/
-
-  function asResourceList(resources: string | string[] | undefined | null): string[] {
-    if (Array.isArray(resources)) {
-      return resources.map((entry) => String(entry))
-    }
-    if (typeof resources === "string") return resources === "" ? [] : [resources]
-    return []
-  }
-
-  function permissionDecision(
-    action: string,
-    resources: string | string[] | undefined | null
-  ): PermissionDecision {
+function createPermissionHook(
+  log: LogFn
+): (action: string, resources: string | string[] | undefined | null) => PermissionDecision {
+  return (action, resources) => {
     try {
       if (["read", "glob", "grep", "search", "list"].includes(action)) {
         log("debug", `[ECC] Auto-approved read-only action: ${action}`)
@@ -554,8 +270,13 @@ export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccR
       return { status: "deny", message: `Error: ${msg}` }
     }
   }
+}
 
-  function compactionText(): string {
+function createCompactionHook(
+  editedFiles: Set<string>,
+  eccRoot: string | null
+): () => string {
+  return () => {
     const version = getECCVersion(eccRoot)
     const lines = [
       "# ECC Context (preserve across compaction)",
@@ -580,6 +301,84 @@ export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccR
     }
     return lines.join("\n")
   }
+}
+
+function detectPackageManager(base: string, env: Record<string, string>): void {
+  const lockfiles: Record<string, string> = {
+    "bun.lockb": "bun",
+    "pnpm-lock.yaml": "pnpm",
+    "yarn.lock": "yarn",
+    "package-lock.json": "npm",
+  }
+  for (const [lockfile, pm] of Object.entries(lockfiles)) {
+    if (hasProjectFile(lockfile, base)) {
+      env.PACKAGE_MANAGER = pm
+      return
+    }
+  }
+}
+
+function detectLanguages(base: string, env: Record<string, string>): void {
+  const langDetectors: Record<string, string> = {
+    "tsconfig.json": "typescript",
+    "go.mod": "go",
+    "pyproject.toml": "python",
+    "Cargo.toml": "rust",
+    "Package.swift": "swift",
+  }
+  const detected: string[] = []
+  for (const [file, lang] of Object.entries(langDetectors)) {
+    if (hasProjectFile(file, base)) detected.push(lang)
+  }
+  if (detected.length > 0) {
+    env.DETECTED_LANGUAGES = detected.join(",")
+    env.PRIMARY_LANGUAGE = detected[0]
+  }
+}
+
+function createShellEnvHook(
+  context: ShellEnvContext
+): (cwd: string | undefined, env: Record<string, string>) => void {
+  const { projectDir, currentProfile, eccRoot } = context
+  return (cwd, env) => {
+    if (!env || typeof env !== "object") return
+    const base = cwd || projectDir
+    const eccVersion = getECCVersion(eccRoot)
+    env.ECC_VERSION = eccVersion
+    env.ECC_PLUGIN = "true"
+    env.ECC_HOOK_PROFILE = currentProfile
+    env.ECC_DISABLED_HOOKS = process.env.ECC_DISABLED_HOOKS || ""
+    env.PROJECT_ROOT = base
+
+    detectPackageManager(base, env)
+    detectLanguages(base, env)
+
+    // Export CLAUDE_PLUGIN_ROOT so commands can resolve ECC root (V1 preserved).
+    const rootAlreadySet = Boolean(
+      (process.env.CLAUDE_PLUGIN_ROOT || "").trim() || (env.CLAUDE_PLUGIN_ROOT || "").trim()
+    )
+    if (eccRoot && !rootAlreadySet) {
+      env.CLAUDE_PLUGIN_ROOT = eccRoot
+    }
+  }
+}
+
+function createSessionHooks(context: SessionHookContext): {
+  onSessionCreated: (details: { directory?: string }) => void
+  onSessionIdle: () => Promise<void>
+  onSessionDeleted: () => void
+  onFileChanged: (file: string, kind: string) => void
+} {
+  const {
+    projectDir,
+    log,
+    currentProfile,
+    shell,
+    hookEnabled,
+    editedFiles,
+    pendingToolChanges,
+    changedFilesStore,
+  } = context
 
   function onSessionCreated(details: { directory?: string }): void {
     if (!hookEnabled("session:start", ["minimal", "standard", "strict"])) return
@@ -594,41 +393,8 @@ export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccR
     if (!hookEnabled("stop:check-console-log", ["minimal", "standard", "strict"])) return
     if (editedFiles.size === 0) return
     log("info", "[ECC] Session idle - running console.log audit")
-
-    let total = 0
-    const filesWithLogs: string[] = []
-    for (const file of editedFiles) {
-      if (!file.match(/\.(ts|tsx|js|jsx)$/)) continue
-      const count = countConsoleLogs(resolvePath(file, projectDir))
-      if (count > 0) {
-        total += count
-        filesWithLogs.push(file)
-      }
-    }
-
-    if (total > 0) {
-      log("warn", `[ECC] Audit: ${total} console.log statement(s) in ${filesWithLogs.length} file(s)`)
-      for (const f of filesWithLogs) log("warn", `  - ${f}`)
-      log("warn", "[ECC] Remove console.log statements before committing")
-    } else {
-      log("info", "[ECC] Audit passed: No console.log statements found")
-    }
-
-    try {
-      if (!shell) {
-        log("debug", "[ECC] Skipping desktop notification (no shell runtime)")
-      } else if (process.platform === "darwin") {
-        await shell`osascript -e 'display notification "Task completed!" with title "OpenCode ECC"'`
-      } else if (process.platform === "win32") {
-        await shell`powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Task completed!', 'OpenCode ECC', 'OK', 'Information')"`
-      } else if (process.platform === "linux") {
-        await shell`notify-send "OpenCode ECC" "Task completed!"`
-      }
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error)
-      log("debug", `[ECC] Desktop notification failed: ${msg}`)
-    }
-
+    auditConsoleLogs(editedFiles, projectDir, log)
+    await notifyDesktop(shell, log)
     editedFiles.clear()
   }
 
@@ -649,28 +415,525 @@ export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccR
     }
   }
 
-  async function loadToolRunners(): Promise<ToolRunners | undefined> {
+  return { onSessionCreated, onSessionIdle, onSessionDeleted, onFileChanged }
+}
+
+async function loadToolRunners(log: LogFn): Promise<ToolRunners | undefined> {
+  try {
+    const changed = await import("../../tools/changed-files.ts")
+    const analyzer = await import("../../tools/dependency-analyzer.ts")
+    return {
+      changedFilesDescription: changed.changedFilesDescription,
+      dependencyAnalyzerDescription: analyzer.dependencyAnalyzerDescription,
+      executeChangedFiles: (args, dir) => changed.executeChangedFiles(args, dir),
+      executeDependencyAnalyzer: (args, dir) => analyzer.executeDependencyAnalyzer(args, dir),
+    }
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error)
+    log("warn", `[ECC] Custom tools disabled: could not load tool runners. ${msg}`)
+    return undefined
+  }
+}
+
+interface ToolHookContext {
+  projectDir: string
+  log: LogFn
+  shell: ShellFn | undefined
+  hookEnabled: (hookId: string, required?: HookProfile | HookProfile[]) => boolean
+  editedFiles: Set<string>
+  pendingToolChanges: Map<string, { path: string; type: "added" | "modified" }>
+  changedFilesStore: ChangedFilesStore | undefined
+  recordSkillRun: ((payload: unknown) => void) | undefined
+  sessionDir: (sessionID: string | undefined) => Promise<string>
+}
+
+type HookGate = (hookId: string, required?: HookProfile | HookProfile[]) => boolean
+
+interface FormatterContext {
+  log: LogFn
+  shell: ShellFn | undefined
+}
+
+function createFormatter(context: FormatterContext): {
+  runPrettier(filePath: string): Promise<void>
+  runTypeCheck(): Promise<void>
+} {
+  const { log, shell } = context
+
+  async function runPrettier(filePath: string): Promise<void> {
+    if (!shell) {
+      log("debug", `[ECC] Skipping prettier (no shell runtime): ${filePath}`)
+      return
+    }
     try {
-      const changed = await import("../../tools/changed-files.ts")
-      const analyzer = await import("../../tools/dependency-analyzer.ts")
-      return {
-        changedFilesDescription: changed.changedFilesDescription,
-        dependencyAnalyzerDescription: analyzer.dependencyAnalyzerDescription,
-        executeChangedFiles: (args, dir) => changed.executeChangedFiles(args, dir),
-        executeDependencyAnalyzer: (args, dir) => analyzer.executeDependencyAnalyzer(args, dir),
-      }
+      await shell`prettier --write ${filePath}`
+      log("info", `[ECC] Formatted: ${filePath}`)
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error)
-      log("warn", `[ECC] Custom tools disabled: could not load tool runners. ${msg}`)
-      return undefined
+      log("debug", `[ECC] Prettier formatting failed for ${filePath}: ${msg}`)
     }
   }
 
-  function dispose(): void {
-    editedFiles.clear()
-    pendingToolChanges.clear()
-    sessionDirs.clear()
+  async function runTypeCheck(): Promise<void> {
+    if (!shell) {
+      log("debug", "[ECC] Skipping tsc check (no shell runtime)")
+      return
+    }
+    try {
+      await shell`npx tsc --noEmit`
+      log("info", "[ECC] TypeScript check passed")
+    } catch (error: unknown) {
+      log("warn", "[ECC] TypeScript errors detected")
+      const stdout = (error as { stdout?: unknown }).stdout
+      if (typeof stdout === "string") {
+        for (const line of stdout.split("\n").slice(0, 5)) log("warn", `  ${line}`)
+      } else {
+        const msg = error instanceof Error ? error.message : String(error)
+        if (msg) log("warn", `  ${msg.split("\n")[0]}`)
+      }
+    }
   }
+
+  return { runPrettier, runTypeCheck }
+}
+
+async function recordPendingWrite(
+  toolName: string,
+  input: unknown,
+  sessionID: string | undefined,
+  callID: string | undefined,
+  sessionDir: (sessionID: string | undefined) => Promise<string>,
+  pendingToolChanges: Map<string, { path: string; type: "added" | "modified" }>
+): Promise<void> {
+  const filePath = getFilePath(input)
+  if (toolName !== "write" || !filePath) return
+  const base = await sessionDir(sessionID)
+  const absPath = resolvePath(filePath, base)
+  let type: "added" | "modified" = "modified"
+  try {
+    type = fs.existsSync(absPath) ? "modified" : "added"
+  } catch {
+    type = "modified"
+  }
+  pendingToolChanges.set(String(callID), { path: filePath, type })
+}
+
+function warnPushReminder(
+  toolName: string,
+  command: string,
+  hookEnabled: HookGate,
+  log: LogFn
+): void {
+  if (
+    hookEnabled("pre:bash:git-push-reminder", "strict") &&
+    toolName === "bash" &&
+    command.includes("git push")
+  ) {
+    log("info", "[ECC] Remember to review changes before pushing: git diff origin/main...HEAD")
+  }
+}
+
+function warnDocFileWrite(
+  toolName: string,
+  filePath: string | null,
+  hookEnabled: HookGate,
+  log: LogFn
+): void {
+  if (
+    hookEnabled("pre:write:doc-file-warning", ["standard", "strict"]) &&
+    toolName === "write" &&
+    typeof filePath === "string" &&
+    filePath.match(/\.(md|txt)$/i) &&
+    !filePath.includes("README") &&
+    !filePath.includes("CHANGELOG") &&
+    !filePath.includes("LICENSE") &&
+    !filePath.includes("CONTRIBUTING")
+  ) {
+    log("warn", `[ECC] Creating ${filePath} - consider if this documentation is necessary`)
+  }
+}
+
+function warnLongCommand(
+  toolName: string,
+  command: string,
+  hookEnabled: HookGate,
+  log: LogFn
+): void {
+  if (hookEnabled("pre:bash:tmux-reminder", "strict") && toolName === "bash") {
+    if (
+      command.match(/^(npm|pnpm|yarn|bun)\s+(install|build|test|run)/) ||
+      command.match(/^cargo\s+(build|test|run)/) ||
+      command.match(/^go\s+(build|test|run)/)
+    ) {
+      log("info", "[ECC] Long-running command detected - consider using background execution")
+    }
+  }
+}
+
+function warnBeforeTool(
+  toolName: string,
+  filePath: string | null,
+  command: string,
+  hookEnabled: HookGate,
+  log: LogFn
+): void {
+  warnPushReminder(toolName, command, hookEnabled, log)
+  warnDocFileWrite(toolName, filePath, hookEnabled, log)
+  warnLongCommand(toolName, command, hookEnabled, log)
+}
+
+function recordToolChange(
+  toolName: string,
+  filePath: string | null,
+  callID: string | undefined,
+  changedFilesStore: ChangedFilesStore | undefined,
+  pendingToolChanges: Map<string, { path: string; type: "added" | "modified" }>
+): void {
+  if (toolName === "edit" && filePath) {
+    changedFilesStore?.recordChange(filePath, "modified")
+  }
+  if (toolName === "write" && filePath) {
+    const key = String(callID)
+    const pending = pendingToolChanges.get(key)
+    if (pending) {
+      changedFilesStore?.recordChange(pending.path, pending.type)
+      pendingToolChanges.delete(key)
+    } else {
+      changedFilesStore?.recordChange(filePath, "modified")
+    }
+  }
+}
+
+async function warnAfterEdit(
+  toolName: string,
+  filePath: string | null,
+  projectDir: string,
+  hookEnabled: HookGate,
+  editedFiles: Set<string>,
+  log: LogFn,
+  formatter: ReturnType<typeof createFormatter>
+): Promise<void> {
+  if ((toolName === "edit" || toolName === "write") && filePath) {
+    editedFiles.add(filePath)
+
+    if (hookEnabled("post:edit:format", ["strict"]) && filePath.match(/\.(ts|tsx|js|jsx)$/)) {
+      await formatter.runPrettier(filePath)
+    }
+
+    if (
+      hookEnabled("post:edit:console-warn", ["standard", "strict"]) &&
+      filePath.match(/\.(ts|tsx|js|jsx)$/)
+    ) {
+      const count = countConsoleLogs(resolvePath(filePath, projectDir))
+      if (count > 0) {
+        log("warn", `[ECC] console.log found in ${filePath} (${count} occurrence${count > 1 ? "s" : ""})`)
+      }
+    }
+  }
+
+  if (
+    hookEnabled("post:edit:typecheck", ["strict"]) &&
+    toolName === "edit" &&
+    typeof filePath === "string" &&
+    filePath.match(/\.tsx?$/)
+  ) {
+    await formatter.runTypeCheck()
+  }
+}
+
+function warnAfterBash(
+  toolName: string,
+  command: string,
+  hookEnabled: HookGate,
+  log: LogFn
+): void {
+  if (
+    hookEnabled("post:bash:pr-created", ["standard", "strict"]) &&
+    toolName === "bash" &&
+    command.includes("gh pr create")
+  ) {
+    log("info", "[ECC] PR created - check GitHub Actions status")
+  }
+}
+
+function trackSkillRun(
+  toolName: string,
+  input: unknown,
+  output: unknown,
+  hookEnabled: HookGate,
+  recordSkillRun: ((payload: unknown) => void) | undefined
+): void {
+  if (
+    !hookEnabled("post:skill:track", ["standard", "strict"]) ||
+    typeof toolName !== "string" ||
+    toolName.trim().toLowerCase() !== "skill"
+  ) {
+    return
+  }
+  try {
+    recordSkillRun?.({
+      tool_name: "Skill",
+      tool_input: input ?? {},
+      tool_response: output,
+    })
+  } catch {
+    // Telemetry is best-effort; never let it affect the tool result.
+  }
+}
+
+function createToolHooks(context: ToolHookContext): {
+  toolBefore(
+    toolName: string,
+    input: unknown,
+    sessionID: string | undefined,
+    callID: string | undefined
+  ): Promise<void>
+  toolAfter(
+    toolName: string,
+    input: unknown,
+    output: unknown,
+    sessionID: string | undefined,
+    callID: string | undefined
+  ): Promise<void>
+} {
+  const {
+    projectDir,
+    log,
+    shell,
+    hookEnabled,
+    editedFiles,
+    pendingToolChanges,
+    changedFilesStore,
+    recordSkillRun,
+    sessionDir,
+  } = context
+  const formatter = createFormatter({ log, shell })
+
+  async function toolBefore(
+    toolName: string,
+    input: unknown,
+    sessionID: string | undefined,
+    callID: string | undefined
+  ): Promise<void> {
+    await recordPendingWrite(toolName, input, sessionID, callID, sessionDir, pendingToolChanges)
+    warnBeforeTool(toolName, getFilePath(input), getCommand(input), hookEnabled, log)
+  }
+
+  async function toolAfter(
+    toolName: string,
+    input: unknown,
+    output: unknown,
+    _sessionID: string | undefined,
+    callID: string | undefined
+  ): Promise<void> {
+    const filePath = getFilePath(input)
+    recordToolChange(toolName, filePath, callID, changedFilesStore, pendingToolChanges)
+    await warnAfterEdit(toolName, filePath, projectDir, hookEnabled, editedFiles, log, formatter)
+    warnAfterBash(toolName, getCommand(input), hookEnabled, log)
+    trackSkillRun(toolName, input, output, hookEnabled, recordSkillRun)
+  }
+
+  return { toolBefore, toolAfter }
+}
+
+function createHookGate(currentProfile: HookProfile): HookGate {
+  const disabledHooks = new Set(
+    (process.env.ECC_DISABLED_HOOKS || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+  )
+  const profileOrder: Record<HookProfile, number> = {
+    minimal: 0,
+    standard: 1,
+    strict: 2,
+  }
+  return (hookId, required = "standard") => {
+    if (disabledHooks.has(hookId)) return false
+    const need = Array.isArray(required) ? required : [required]
+    return need.some((entry) => profileOrder[currentProfile] >= profileOrder[entry])
+  }
+}
+
+function createSessionDirResolver(
+  projectDir: string,
+  sessionDirs: Map<string, string>,
+  resolveSessionDir: (sessionID: string) => Promise<string>
+): (sessionID: string | undefined) => Promise<string> {
+  return async (sessionID) => {
+    if (!sessionID) return projectDir
+    const cached = sessionDirs.get(sessionID)
+    if (cached) return cached
+    try {
+      const resolved = await resolveSessionDir(sessionID)
+      if (resolved) {
+        sessionDirs.set(sessionID, resolved)
+        return resolved
+      }
+    } catch {
+      // fall through to the plugin location directory
+    }
+    return projectDir
+  }
+}
+
+async function loadChangedFilesStore(
+  projectDir: string,
+  log: LogFn
+): Promise<ChangedFilesStore | undefined> {
+  try {
+    const store = await import("../lib/changed-files-store.ts")
+    store.initStore(projectDir)
+    return store
+  } catch {
+    log(
+      "warn",
+      "[ECC] changed-files tracking disabled: could not load the changed-files store. " +
+        "Run `ecc repair --target opencode` to restore the missing files. Other ECC hooks are unaffected."
+    )
+    return undefined
+  }
+}
+
+type SkillRunTrackerModule = { run?: (payload: unknown) => void }
+
+async function loadSkillTracker(
+  trackerRoot: string | null,
+  log: LogFn
+): Promise<((payload: unknown) => void) | undefined> {
+  try {
+    const trackerPath = trackerRoot
+      ? path.join(trackerRoot, "scripts", "hooks", "skill-run-tracker.js")
+      : null
+    if (!trackerPath || !fs.existsSync(trackerPath)) {
+      throw new Error("skill-run-tracker.js not found")
+    }
+    const loaded = (await import(pathToFileURL(trackerPath).href)) as SkillRunTrackerModule & {
+      default?: SkillRunTrackerModule
+    }
+    const entry = typeof loaded.run === "function" ? loaded : loaded.default
+    if (!entry || typeof entry.run !== "function") {
+      throw new Error("skill-run-tracker.js exposes no run()")
+    }
+    return entry.run
+  } catch {
+    log(
+      "warn",
+      "[ECC] skill-run telemetry disabled: could not load scripts/hooks/skill-run-tracker.js. " +
+        "Run `ecc repair --target opencode` to restore the missing files. Other ECC hooks are unaffected."
+    )
+    return undefined
+  }
+}
+
+function auditConsoleLogs(
+  editedFiles: Set<string>,
+  projectDir: string,
+  log: LogFn
+): void {
+  let total = 0
+  const filesWithLogs: string[] = []
+  for (const file of editedFiles) {
+    if (!file.match(/\.(ts|tsx|js|jsx)$/)) continue
+    const count = countConsoleLogs(resolvePath(file, projectDir))
+    if (count > 0) {
+      total += count
+      filesWithLogs.push(file)
+    }
+  }
+
+  if (total > 0) {
+    log("warn", `[ECC] Audit: ${total} console.log statement(s) in ${filesWithLogs.length} file(s)`)
+    for (const f of filesWithLogs) log("warn", `  - ${f}`)
+    log("warn", "[ECC] Remove console.log statements before committing")
+  } else {
+    log("info", "[ECC] Audit passed: No console.log statements found")
+  }
+}
+
+async function notifyDesktop(shell: ShellFn | undefined, log: LogFn): Promise<void> {
+  try {
+    if (!shell) {
+      log("debug", "[ECC] Skipping desktop notification (no shell runtime)")
+    } else if (process.platform === "darwin") {
+      await shell`osascript -e 'display notification "Task completed!" with title "OpenCode ECC"'`
+    } else if (process.platform === "win32") {
+      await shell`powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Task completed!', 'OpenCode ECC', 'OK', 'Information')"`
+    } else if (process.platform === "linux") {
+      await shell`notify-send "OpenCode ECC" "Task completed!"`
+    }
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error)
+    log("debug", `[ECC] Desktop notification failed: ${msg}`)
+  }
+}
+
+function disposeRuntime(
+  editedFiles: Set<string>,
+  pendingToolChanges: Map<string, { path: string; type: "added" | "modified" }>,
+  sessionDirs: Map<string, string>
+): void {
+  editedFiles.clear()
+  pendingToolChanges.clear()
+  sessionDirs.clear()
+}
+
+export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccRuntime> {
+  const { projectDir, log } = options
+
+  const editedFiles = new Set<string>()
+  const pendingToolChanges = new Map<string, { path: string; type: "added" | "modified" }>()
+  const sessionDirs = new Map<string, string>()
+
+  const currentProfile = normalizeProfile(process.env.ECC_HOOK_PROFILE)
+  const hookEnabled = createHookGate(currentProfile)
+
+  const shell = options.shell ?? getShell()
+
+  const sessionDir = createSessionDirResolver(projectDir, sessionDirs, options.resolveSessionDir)
+
+  // Lazily loaded changed-files store.
+  // Lazily loaded changed-files store.
+  const changedFilesStore = await loadChangedFilesStore(projectDir, log)
+
+  // Skill telemetry tracker.
+  const trackerRoot = findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.skillTracker)
+  const eccRoot =
+    findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.resolver) ??
+    findEccRootDir(resolvedRuntimeDir, ECC_ROOT_PROBES.root)
+  const recordSkillRun = await loadSkillTracker(trackerRoot, log)
+
+  const { toolBefore, toolAfter } = createToolHooks({
+    projectDir,
+    log,
+    shell,
+    hookEnabled,
+    editedFiles,
+    pendingToolChanges,
+    changedFilesStore,
+    recordSkillRun,
+    sessionDir,
+  })
+
+  const shellEnv = createShellEnvHook({ projectDir, currentProfile, eccRoot })
+
+  const permissionDecision = createPermissionHook(log)
+
+  const compactionText = createCompactionHook(editedFiles, eccRoot)
+
+  const { onSessionCreated, onSessionIdle, onSessionDeleted, onFileChanged } = createSessionHooks({
+    projectDir,
+    log,
+    currentProfile,
+    shell,
+    hookEnabled,
+    editedFiles,
+    pendingToolChanges,
+    changedFilesStore,
+  })
+
+  const loadRunners = (): Promise<ToolRunners | undefined> => loadToolRunners(log)
+
 
   return {
     projectDir,
@@ -684,7 +947,7 @@ export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccR
     onSessionIdle,
     onSessionDeleted,
     onFileChanged,
-    loadToolRunners,
-    dispose,
+    loadToolRunners: loadRunners,
+    dispose: () => disposeRuntime(editedFiles, pendingToolChanges, sessionDirs),
   }
 }
