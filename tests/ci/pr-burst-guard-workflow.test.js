@@ -98,10 +98,9 @@ for (const permission of ['read', 'write']) test(`actual CLI caps ${permission} 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-pr-cap-'));
   const closedTrigger = permission === 'write';
   const extraNewer = closedTrigger ? 5 : 0;
-  const rows = Array.from({ length: 21 + extraNewer }, (_, i) => ({ number: i < 20 ? i + 1 : 3649 + i - 20,
-    user: { id: 42, login: 'contributor' }, state: 'open',
+  let rows = Array.from({ length: 21 + extraNewer }, (_, i) => ({ number: i < 20 ? i + 1 : 3649 + i - 20,
+    user: { id: 42, login: 'contributor' }, state: closedTrigger && i === 20 ? 'closed' : 'open',
     created_at: new Date(Date.UTC(2026, 9, 1, i, 0, 0)).toISOString() }));
-  if (closedTrigger) rows[20].state = 'closed';
   const mutations = [];
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -116,8 +115,9 @@ for (const permission of ['read', 'write']) test(`actual CLI caps ${permission} 
     if (url.pathname.endsWith('/pulls')) return send(rows.filter(pr => url.searchParams.get('state') !== 'open' || pr.state === 'open').reverse());
     if (/\/issues\/\d+\/comments$/.test(url.pathname)) return send(req.method === 'GET' ? [] : {});
     if (/\/pulls\/\d+$/.test(url.pathname) && req.method === 'PATCH') {
-      const pr = rows.find(row => row.number === Number(url.pathname.split('/').pop()));
-      pr.state = body.state; return send(pr);
+      const number = Number(url.pathname.split('/').pop());
+      rows = rows.map(row => row.number === number ? { ...row, state: body.state } : row);
+      return send(rows.find(row => row.number === number));
     }
     res.statusCode = 404; send({ message: 'fixture route missing' });
   });
@@ -139,8 +139,9 @@ for (const permission of ['read', 'write']) test(`actual CLI caps ${permission} 
     assert.equal(rows.filter(pr => pr.state === 'open').length, 20);
     assert.deepEqual(mutations.filter(m => m.method === 'PATCH').map(m => m.route),
       expectedExcess.map(number => `/repos/owner/repo/pulls/${number}`));
-    assert.match(mutations.find(m => m.route.endsWith(`/issues/${expectedExcess[0]}/comments`)).body.body,
-      new RegExp(`${21 + extraNewer - Number(closedTrigger)} open pull requests.*limit of 10`));
+    const comment = mutations.find(m => m.route.endsWith(`/issues/${expectedExcess[0]}/comments`)).body.body;
+    assert(comment.includes(`${21 + extraNewer - Number(closedTrigger)} open pull requests`));
+    assert(comment.includes('limit of 10'));
   } finally {
     await new Promise(resolve => server.close(resolve));
     fs.rmSync(tmp, { recursive: true, force: true });
