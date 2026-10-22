@@ -6,17 +6,12 @@
  *
  * OpenCode discovers every `plugins/*.{ts,js}` file on its own, so the inert
  * stub is loaded by the host on every boot no matter what the user answered.
- * It therefore has to satisfy BOTH plugin loader contracts:
+ * This fork targets the OpenCode v2 plugin contract only: the default export
+ * must be a plain object carrying `id` and `setup`.
  *
- *   v1 loader (`readV1Plugin`, node-BTHdWE4q.js:156305) â€” the default export
- *     must be a plain object carrying `server()` (or `tui()`, never both).
- *   v2 loader (`PluginModule`, node-BTHdWE4q.js:168858) â€” the default export
- *     must be a plain object carrying `id` and `setup`.
- *
- * A bare `export default async () => ({})` satisfies neither: the v1 loader
- * rejects it as "Plugin export is not a function" and the v2 loader rejects it
- * as a legacy v1 export. The stub must also stay inert â€” no imports (module
- * initialization alone has effects) and no registered hooks.
+ * A bare `export default async () => ({})` is rejected by the v2 loader. The
+ * stub must also stay inert - no imports (module initialization alone has
+ * effects) and no registered hooks.
  */
 
 const assert = require('assert');
@@ -29,33 +24,6 @@ const { getDisabledOpenCodePluginContent } = require('../../scripts/lib/install/
 
 function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-/** Mirror of the v1 loader contract (readV1Plugin). */
-function readV1Plugin(mod, spec, kind, mode = 'strict') {
-  const value = mod.default;
-  if (!isRecord(value)) {
-    if (mode === 'detect') return undefined;
-    throw new TypeError(`Plugin ${spec} must default export an object with ${kind}()`);
-  }
-  if (mode === 'detect' && !('id' in value) && !('server' in value) && !('tui' in value)) {
-    return undefined;
-  }
-  const server = 'server' in value ? value.server : undefined;
-  const tui = 'tui' in value ? value.tui : undefined;
-  if (server !== undefined && typeof server !== 'function') {
-    throw new TypeError(`Plugin ${spec} has invalid server export`);
-  }
-  if (tui !== undefined && typeof tui !== 'function') {
-    throw new TypeError(`Plugin ${spec} has invalid tui export`);
-  }
-  if (server !== undefined && tui !== undefined) {
-    throw new TypeError(`Plugin ${spec} must default export either server() or tui(), not both`);
-  }
-  if (server === undefined) {
-    throw new TypeError(`Plugin ${spec} must default export an object with server()`);
-  }
-  return value;
 }
 
 /** Mirror of the v2 loader contract (PluginModule struct). */
@@ -96,10 +64,10 @@ async function importInertPlugin() {
 async function test(name, fn) {
   try {
     await fn();
-    console.log(`  âœ“ ${name}`);
+    console.log(`  \u2713 ${name}`);
     return true;
   } catch (error) {
-    console.log(`  âœ— ${name}`);
+    console.log(`  \u2717 ${name}`);
     console.log(`    Error: ${error.message}`);
     return false;
   }
@@ -111,13 +79,6 @@ async function runTests() {
   let failed = 0;
 
   const { content, mod } = await importInertPlugin();
-
-  if (await test('the inert plugin satisfies the v1 loader contract', () => {
-    const plugin = readV1Plugin(mod, 'inert-plugin.ts', 'server', 'detect');
-    assert.ok(plugin, 'The v1 loader must not ignore the inert plugin');
-    assert.strictEqual(typeof plugin.server, 'function');
-    assert.ok(!('tui' in plugin), 'The v1 loader rejects a plugin exporting both server() and tui()');
-  })) passed++; else failed++;
 
   if (await test('the inert plugin satisfies the v2 loader contract', () => {
     const plugin = readV2Plugin(mod, 'inert-plugin.ts');
@@ -131,9 +92,6 @@ async function runTests() {
   })) passed++; else failed++;
 
   if (await test('the inert plugin registers no hooks and imports nothing', async () => {
-    const hooks = await mod.default.server({ client: {}, directory: process.cwd() }, {});
-    assert.ok(isRecord(hooks), 'The v1 server() must return a hook object');
-    assert.deepStrictEqual(Object.keys(hooks), [], 'The inert plugin must not register hooks');
     const calls = [];
     await mod.default.setup({
       tool: { hook: () => calls.push('tool'), transform: () => calls.push('transform') },

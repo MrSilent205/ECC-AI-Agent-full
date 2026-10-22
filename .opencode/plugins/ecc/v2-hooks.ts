@@ -70,10 +70,7 @@ export async function setupV2Hooks(ctx: any): Promise<() => void> {
     const action = event.action
     log("info", `[ECC] Permission requested: action=${action}`)
 
-    const resourcesText = Array.isArray(event.resources)
-      ? event.resources.join("\n")
-      : String(event.resources ?? "")
-    const decision = runtime.permissionDecision(action, resourcesText)
+    const decision = runtime.permissionDecision(action, event.resources)
     if (decision.status === "allow" || decision.status === "deny") {
       event.effect = decision.status
       event.message = decision.message
@@ -182,5 +179,8 @@ export async function setupV2Hooks(ctx: any): Promise<() => void> {
   })()
 
   log("info", `[ECC] Plugin loaded - profile=${runtime.currentProfile}`)
-  return () => controller.abort()
+  return () => {
+    controller.abort()
+    runtime.dispose()
+  }
 }

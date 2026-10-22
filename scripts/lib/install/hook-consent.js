@@ -90,13 +90,9 @@ function isOpenCodePluginEntrypoint(operation = {}) {
 function getDisabledOpenCodePluginContent() {
   // OpenCode discovers plugins independently of opencode.json registration.
   // Do not import the original module: even module initialization has effects.
-  // The stub is loaded by whichever plugin loader the host runs, so it has to
-  // satisfy both contracts at once:
-  //   v1 loader: default export must be an object with `server()`.
-  //   v2 loader: default export must be an object with `id` and `setup`.
-  // A bare async function satisfies neither, and a v1-only stub is rejected by
-  // the v2 loader — the foreign key is ignored, not the whole module.
-  return 'export default { id: "ecc-hooks", server: async () => ({}), setup() {} };\n';
+  // This fork targets the OpenCode v2 plugin contract only: the default export
+  // must be an object with `id` and `setup`, and must register no hooks.
+  return 'export default { id: "ecc-hooks", setup() {} };\n';
 }
 
 function isOpenCodeHookActivationOperation(operation = {}) {

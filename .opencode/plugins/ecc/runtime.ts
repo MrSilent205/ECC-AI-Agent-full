@@ -1,9 +1,8 @@
 /**
  * Shared ECC hook runtime.
  *
- * The plugin ships two surfaces: OpenCode v1 (`server`) and OpenCode v2
- * (`setup`). Both drive the same state and behaviour through this module so a
- * behaviour change only has to be made once.
+ * OpenCode v2-only. This fork is optimized exclusively for OpenCode.
+ * For Claude/Codex use the upstream ECC repository.
  *
  * Framework-free on purpose: no `@opencode-ai/plugin` import, so this module
  * loads in any directory without node_modules.
@@ -70,7 +69,10 @@ export interface EccRuntime {
     callID: string | undefined
   ): Promise<void>
   shellEnv(cwd: string | undefined, env: Record<string, string>): void
-  permissionDecision(action: string, resourcesText: string): PermissionDecision
+  permissionDecision(
+    action: string,
+    resources: string | string[] | undefined | null
+  ): PermissionDecision
   compactionText(): string
   onSessionCreated(details: { directory?: string }): void
   onSessionIdle(): Promise<void>
@@ -488,31 +490,64 @@ export async function createEccRuntime(options: EccRuntimeOptions): Promise<EccR
     }
   }
 
-  function permissionDecision(action: string, resourcesText: string): PermissionDecision {
+  /** Shell syntax that can chain, substitute, or redirect past an allowlist. */
+  const UNSAFE_SHELL_SYNTAX = /[;&|`$<>\n\r(){}]/
+
+  const FORMATTER_PATTERN =
+    /^(npx )?(@biomejs\/biome|prettier|black|gofmt|rustfmt|swift-format)(\s+[^\s;&|`$<>(){}\\]+)*$/
+
+  const TEST_RUNNER_PATTERN =
+    /^(npm test|npx vitest|npx jest|pytest|go test|cargo test)(\s+[-A-Za-z0-9_./=:@,+]+)*$/
+
+  function asResourceList(resources: string | string[] | undefined | null): string[] {
+    if (Array.isArray(resources)) {
+      return resources.map((entry) => String(entry))
+    }
+    if (typeof resources === "string") return resources === "" ? [] : [resources]
+    return []
+  }
+
+  function permissionDecision(
+    action: string,
+    resources: string | string[] | undefined | null
+  ): PermissionDecision {
     try {
       if (["read", "glob", "grep", "search", "list"].includes(action)) {
         log("debug", `[ECC] Auto-approved read-only action: ${action}`)
         return { status: "allow", message: "Read-only operation" }
       }
 
-      if (
-        action === "bash" &&
-        /^(npx )?(@biomejs\/biome|prettier|black|gofmt|rustfmt|swift-format)/.test(resourcesText.trim())
-      ) {
-        log("debug", "[ECC] Auto-approved formatter")
-        return { status: "allow", message: "Formatter execution" }
+      if (action !== "bash") {
+        log("debug", `[ECC] Permission requires user decision: ${action}`)
+        return { status: "ask", message: "" }
       }
 
-      if (
-        action === "bash" &&
-        /^(npm test|npx vitest|npx jest|pytest|go test|cargo test)/.test(resourcesText.trim())
-      ) {
-        log("debug", "[ECC] Auto-approved test execution")
-        return { status: "allow", message: "Test execution" }
+      const commands = asResourceList(resources).map((entry) => entry.trim())
+      // No resource means nothing to validate: never auto-approve.
+      if (commands.length === 0 || commands.some((command) => command === "")) {
+        log("debug", "[ECC] Bash permission without a command requires user decision")
+        return { status: "ask", message: "" }
       }
 
-      log("debug", `[ECC] Permission requires user decision: ${action}`)
-      return { status: "ask", message: "" }
+      // Every resource must independently pass the same allowlist. A single
+      // unsafe or unrecognised command keeps the whole request at "ask".
+      for (const command of commands) {
+        if (UNSAFE_SHELL_SYNTAX.test(command)) {
+          log("debug", "[ECC] Bash permission with shell composition requires user decision")
+          return { status: "ask", message: "" }
+        }
+        if (FORMATTER_PATTERN.test(command)) continue
+        if (TEST_RUNNER_PATTERN.test(command)) continue
+        log("debug", "[ECC] Bash permission command not allowlisted")
+        return { status: "ask", message: "" }
+      }
+
+      const isTest = commands.every((command) => TEST_RUNNER_PATTERN.test(command))
+      log("debug", isTest ? "[ECC] Auto-approved test execution" : "[ECC] Auto-approved formatter")
+      return {
+        status: "allow",
+        message: isTest ? "Test execution" : "Formatter execution",
+      }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error)
       log("error", `[ECC] Permission handling error for ${action}: ${msg}`)

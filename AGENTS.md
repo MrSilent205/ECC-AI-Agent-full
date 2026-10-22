@@ -1,6 +1,6 @@
 # ECC — Agent Instructions
 
-This is a **production-ready AI coding plugin** providing 71 specialized agents, 311 skills, 97 commands, and automated hook workflows for software development.
+This is a **production-ready AI coding plugin for OpenCode only**. This fork is optimized exclusively for OpenCode. For Claude/Codex use the upstream ECC repository. Provides 71 specialized agents, 311 skills, 97 commands, and automated hook workflows.
 
 **Version:** 2.2.3
 

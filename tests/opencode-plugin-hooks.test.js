@@ -18,11 +18,11 @@ function runTest(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  Γ£ô ${name}`)
+      console.log(`  \u2713 ${name}`)
       return { passed: 1, failed: 0 }
     })
     .catch((error) => {
-      console.log(`  Γ£ù ${name}`)
+      console.log(`  \u2717 ${name}`)
       console.error(`    ${error.stack || error.message}`)
       return { passed: 0, failed: 1 }
     })
@@ -153,7 +153,6 @@ async function setupPlugin(plugin, projectDir, events = []) {
     cleanup = await plugin.default.setup(ctx)
     // Let the event-subscription loop drain the scripted events.
     for (let i = 0; i < 10; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
       await new Promise((resolve) => setImmediate(resolve))
     }
   })
@@ -201,6 +200,12 @@ async function main() {
         assert.ok(plugin.default && typeof plugin.default === "object", "Expected an object default export")
         assert.strictEqual(plugin.default.id, "ecc-hooks")
         assert.strictEqual(typeof plugin.default.setup, "function")
+        // V1 is removed in this fork: no legacy `server` surface may return.
+        assert.strictEqual(
+          plugin.default.server,
+          undefined,
+          "Expected the legacy v1 server export to be removed"
+        )
       },
     ],
     [
@@ -425,7 +430,6 @@ async function main() {
 
           for (const action of ["read", "glob", "grep"]) {
             const event = permissionEvent(action, [])
-            // eslint-disable-next-line no-await-in-loop
             await captured.permission[0](event)
             assert.strictEqual(event.effect, "allow", `Expected allow for ${action}`)
             assert.strictEqual(event.message, "Read-only operation")
@@ -476,6 +480,66 @@ async function main() {
       ),
     ],
     [
+      "permission hook keeps unknown bash commands at ask",
+      async () => withTempProject(
+        [],
+        async (projectDir) => {
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
+
+          const risky = permissionEvent("bash", ["rm -rf /"])
+          await captured.permission[0](risky)
+          assert.strictEqual(risky.effect, "ask", "Expected unknown bash commands to stay ask")
+        }
+      ),
+    ],
+    [
+      "permission hook refuses compound shell commands",
+      async () => withTempProject(
+        [],
+        async (projectDir) => {
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
+
+          for (const command of [
+            "npm test; printf MARKER",
+            "npm test && rm -rf dist",
+            "prettier --write src/index.ts || whoami",
+            "npm test | tee /tmp/out",
+            "npm test\nrm -rf dist",
+            "npm test $(whoami)",
+            "npm test `whoami`",
+            "npx prettier --write src/index.ts > /tmp/out",
+          ]) {
+            const event = permissionEvent("bash", [command])
+            await captured.permission[0](event)
+            assert.strictEqual(event.effect, "ask", `Expected ask for ${JSON.stringify(command)}`)
+          }
+        }
+      ),
+    ],
+    [
+      "permission hook requires every resource to pass the allowlist",
+      async () => withTempProject(
+        [],
+        async (projectDir) => {
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
+
+          const mixed = permissionEvent("bash", ["npm test", "rm -rf /"])
+          await captured.permission[0](mixed)
+          assert.strictEqual(mixed.effect, "ask", "Expected mixed resources to stay ask")
+
+          const empty = permissionEvent("bash", [])
+          await captured.permission[0](empty)
+          assert.strictEqual(empty.effect, "ask", "Expected a bash request with no resource to stay ask")
+        }
+      ),
+    ],
+    [
       "compaction hook preserves ECC context with version banner",
       async () => withTempProject(
         [],
@@ -517,6 +581,17 @@ async function main() {
           assert.strictEqual(analysis.success, false, "Temp project has no package.json")
         }
       ),
+    ],
+    [
+      "setup returns a cleanup function that stops the event subscription",
+      async () => withTempProject([], async (projectDir) => {
+        const { cleanup } = await withProfile("standard", () =>
+          setupPlugin(plugin, projectDir, [{ type: "session.created", data: {} }])
+        )
+        assert.strictEqual(typeof cleanup, "function", "Expected setup to return a cleanup function")
+        await cleanup()
+        await cleanup()
+      }),
     ],
   ]
 

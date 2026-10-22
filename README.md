@@ -69,7 +69,7 @@
 > [!WARNING]
 > **Official sources only.** Install ECC only from verified channels: the GitHub repository [github.com/affaan-m/ECC](https://github.com/affaan-m/ECC), the npm packages [`ecc-universal`](https://www.npmjs.com/package/ecc-universal) and [`ecc-agentshield`](https://www.npmjs.com/package/ecc-agentshield), the [GitHub App](https://github.com/apps/ecc-tools), the plugin slug `ecc@ecc`, and the project website [ecc.tools](https://ecc.tools). Third-party re-uploads and unofficial mirrors are not maintained or reviewed by the project and may contain malware.
 
-## Install with Claude Code
+## Install with Claude Code *(upstream only - this OpenCode-optimized fork does not support Claude Code/Codex)*
 
 Use the [guided setup](#install-ecc) or [native plugin commands](#claude-code-details). Both install the same `ecc@ecc` plugin. Choose one and do not stack a full manual Claude install on top.
 
@@ -139,7 +139,7 @@ Instead of rebuilding that process in every prompt, you install it once and make
 
 > Optimize the context window. Persist everything else.
 
-ECC is MIT-licensed open source. It works best with Claude Code today, has native Codex and Qoder plugin paths, and provides capability-limited adapters for Cursor, OpenCode, Gemini, Zed, GitHub Copilot, Antigravity, Qwen, and other harnesses. See the [support status matrix](#platform-support) before assuming feature parity.
+ECC is MIT-licensed open source. **This fork is optimized exclusively for OpenCode.** For Claude Code, Codex, or other harnesses use the [upstream repository](https://github.com/affaan-m/ECC). OpenCode support is the sole focus of this fork.
 
 Access to 71 agents, 311 skills, and 97 legacy command shims, plus hooks, rules, memory, continuous learning, and AgentShield security scanning. The agents are specialized for planning, review, build repair, security, architecture, and domain work.
 
@@ -164,7 +164,7 @@ Access to 71 agents, 311 skills, and 97 legacy command shims, plus hooks, rules,
 ## Install ECC
 
 > [!IMPORTANT]
-> ECC 2.2 includes guided package setup for Claude Code, Codex, and Kimi Code.
+> **This fork is OpenCode-only.** For Claude Code or Codex use the upstream ECC repository. ECC 2.2 includes guided package setup.
 > The universal package requires Node.js 18 or newer. Claude plugin setup also
 > requires Git and Claude Code 2.1 or newer on `PATH`.
 
