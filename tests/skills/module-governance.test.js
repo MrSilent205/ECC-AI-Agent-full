@@ -48,6 +48,8 @@ for (const target of ['claude', 'claude-project', 'cursor', 'antigravity', 'code
       sourceRoot: ROOT, target, homeDir: '/private/tmp/ecc-module-plan-preview',
       projectRoot: '/private/tmp/ecc-module-plan-preview', profileId: 'minimal',
       includeComponentIds: ['capability:module-governance'],
+      // This checks skill-copy planning; installer tests validate the compiled payload.
+      exemptValidationCodes: ['opencode-plugin-not-built'],
     });
     for (const owner of OWNERS) {
       assert.ok(plan.operations.some(operation => operation.kind === 'copy-file'
