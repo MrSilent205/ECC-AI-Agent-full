@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const test = require('node:test');
-const { compileContextProfile, loadContextProfile } = require('../../scripts/lib/context-profiles');
+const { compileContextProfile, compileContextProfileBatch, loadContextProfile } = require('../../scripts/lib/context-profiles');
 const { KERNEL, update, withFixture, write } = require('./helpers/context-fixture');
 
 test('Lean selects three discoverable skills and leaves remaining workflows routed', () => withFixture(root => {
@@ -138,4 +138,47 @@ test('every target projects the same explicit profile selection with unobserved 
     assert.deepEqual(plan.selectedIds, KERNEL.map(id => `skill:${id}`));
     assert.ok(plan.entries.every(entry => entry.projection.nativeSupport === 'unobserved'));
   }
+}));
+
+test('a batch compiles every projection from one registry snapshot', () => withFixture(root => {
+  const { loadContextRegistry } = require('../../scripts/lib/context-pack-registry');
+  const targets = loadContextRegistry({ repoRoot: root }).targets;
+  const { registry, plans } = compileContextProfileBatch({ repoRoot: root, profileIds: ['lean@1', 'full@1'] });
+  assert.equal(plans.length, 2 * targets.length);
+  assert.equal(registry.registryDigest, plans[0].registryDigest);
+  for (const plan of plans) {
+    const single = compileContextProfile({ repoRoot: root, profileId: plan.profileId, target: plan.target });
+    assert.equal(plan.planDigest, single.planDigest);
+    assert.deepEqual(plan.selectedIds, single.selectedIds);
+  }
+}));
+
+test('a batch loads the registry once instead of once per projection', context => withFixture(root => {
+  const registryLibrary = require('../../scripts/lib/context-pack-registry');
+  const modulePath = require.resolve('../../scripts/lib/context-profiles');
+  const targetCount = registryLibrary.loadContextRegistry({ repoRoot: root }).targets.length;
+  const original = registryLibrary.loadContextRegistry;
+  const cached = require.cache[modulePath];
+  delete require.cache[modulePath];
+  let calls = 0;
+  context.mock.method(registryLibrary, 'loadContextRegistry', options => { calls += 1; return original(options); });
+  try {
+    const { plans } = require('../../scripts/lib/context-profiles').compileContextProfileBatch({
+      repoRoot: root, profileIds: ['lean@1', 'full@1'],
+    });
+    assert.equal(plans.length, 2 * targetCount);
+    assert.equal(calls, 1);
+  } finally {
+    context.mock.restoreAll();
+    delete require.cache[modulePath];
+    if (cached) require.cache[modulePath] = cached;
+  }
+}));
+
+test('a batch validates its inputs and never accepts a caller-built registry', () => withFixture(root => {
+  for (const options of [
+    { profileIds: 'lean@1' }, { targets: 'codex' }, { projections: [] }, { projections: () => 'nope' },
+    { profileIds: ['lean@1'], targets: ['nope'] }, { profileIds: ['missing@1'] },
+  ]) assert.throws(() => compileContextProfileBatch({ repoRoot: root, ...options }));
+  assert.throws(() => compileContextProfileBatch({ repoRoot: root, registry: { entries: [] } }), /registry|option|unknown/i);
 }));

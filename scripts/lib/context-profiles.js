@@ -8,6 +8,7 @@ const {
 
 const PROFILE_ALIASES = Object.freeze({ lean: 'lean@1', full: 'full@1' });
 const MODES = Object.freeze(['manual', 'suggest', 'auto']);
+const BATCH_KEYS = new Set(['repoRoot', 'profileIds', 'targets', 'projections']);
 
 function loadContextProfile(profileId = 'lean@1', { repoRoot = DEFAULT_REPO_ROOT } = {}) {
   const id = PROFILE_ALIASES[profileId] || profileId;
@@ -103,6 +104,30 @@ function compileContextProfileWithRegistry({ repoRoot = DEFAULT_REPO_ROOT, ...op
   return { registry, plan: compileContextPlan(registry, { repoRoot, ...options }) };
 }
 
+// Batch variant of the canonical compiler: one registry snapshot, many projections.
+// The snapshot is still produced by the canonical loader inside this module, so a
+// caller declares which projections to compile but never supplies a registry.
+// `projections` may be a function of the loaded registry for callers that derive
+// their projection list from the snapshot itself.
+function compileContextProfileBatch(options = {}) {
+  for (const key of Reflect.ownKeys(options)) {
+    if (!BATCH_KEYS.has(key)) throw new Error(`Unknown context profile batch option: ${String(key)}`);
+  }
+  const { repoRoot = DEFAULT_REPO_ROOT, profileIds = [], targets = null, projections = null } = options;
+  if (!Array.isArray(profileIds)) throw new Error('Context profile IDs must be an array');
+  if (targets !== null && !Array.isArray(targets)) throw new Error('Context profile targets must be an array');
+  if (projections !== null && typeof projections !== 'function') {
+    throw new Error('Context profile projections must be a function of the loaded registry');
+  }
+  const registry = loadContextRegistry({ repoRoot });
+  const requested = projections
+    ? projections(registry)
+    : profileIds.flatMap(profileId => (targets || registry.targets).map(target => ({ profileId, target })));
+  if (!Array.isArray(requested)) throw new Error('Context profile projections must be an array');
+  const plans = requested.map(projection => compileContextPlan(registry, { ...projection, repoRoot }));
+  return { registry, plans };
+}
+
 function compileContextPlan(registry, {
   repoRoot = DEFAULT_REPO_ROOT, profileId = 'lean@1', selectionMode = 'manual',
   target = 'codex', include = [], exclude = [],
@@ -145,4 +170,7 @@ function compileContextPlan(registry, {
   return plan;
 }
 
-module.exports = { compileContextProfile, compileContextProfileWithRegistry, explainContextEntry, loadContextProfile };
+module.exports = {
+  compileContextProfile, compileContextProfileBatch, compileContextProfileWithRegistry,
+  explainContextEntry, loadContextProfile,
+};

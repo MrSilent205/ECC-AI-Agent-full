@@ -2,7 +2,7 @@
 'use strict';
 
 const { loadContextRegistry, loadSkillTriggers } = require('../lib/context-pack-registry');
-const { compileContextProfile } = require('../lib/context-profiles');
+const { compileContextProfileBatch } = require('../lib/context-profiles');
 const { digestObject } = require('../lib/context-profile-support');
 
 function validate(repoRoot) {
@@ -23,15 +23,13 @@ function validate(repoRoot) {
     }
   }
   const profiles = ['lean@1', 'full@1'];
-  for (const profileId of profiles) {
-    for (const target of registry.targets) {
-      compileContextProfile({ repoRoot, profileId, target });
-    }
-  }
+  // One registry snapshot for every profile/target projection: the projections
+  // are compiled in a single batch instead of reloading the registry per plan.
+  const { plans } = compileContextProfileBatch({ repoRoot, profileIds: profiles });
   return {
     status: 'success', skillCount: registry.entries.length,
     profileCount: profiles.length, targetCount: registry.targets.length,
-    projectionCount: profiles.length * registry.targets.length,
+    projectionCount: plans.length,
     registryDigest: registry.registryDigest, nativeCertification: 'unobserved',
     triggerCoverage: { skills: manifest ? manifest.coverage.skills : 0, withTriggers: Object.keys(triggers).length },
   };
