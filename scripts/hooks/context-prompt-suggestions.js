@@ -42,15 +42,23 @@ function message(binding, suggestions) {
 }
 
 function run(rawInput, _context = {}, env = process.env) {
-  const started = Date.now();
   const stateRoot = env.ECC_CONTEXT_STATE_ROOT;
   if (!stateRoot || !path.isAbsolute(stateRoot) || path.resolve(stateRoot) !== stateRoot) return '';
   const prompt = promptFrom(rawInput);
   if (!prompt || prompt.trim().length < MIN_PROMPT_LENGTH || prompt.trimStart().startsWith('/')
     || Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) return '';
+  // Loading the routing module is fixed process startup cost, not per-prompt work.
+  // It is kept outside the budget window so a slow disk cannot silently mute the
+  // hook, while the budget still bounds the index read and suggestion work.
+  let routing;
+  try {
+    routing = require('../lib/context-routing-index');
+  } catch (error) {
+    return { stdout: '', stderr: `[ContextSuggest] ${String(error.message).replace(/[^\x20-\x7E]/g, '?')}` };
+  }
+  const started = Date.now();
   const budget = budgetMs(env);
   try {
-    const routing = require('../lib/context-routing-index');
     const binding = routing.readBinding(stateRoot);
     if (binding.selectionMode === 'manual' || Date.now() - started >= budget) return '';
     const index = routing.readRoutingIndex(stateRoot, binding);
