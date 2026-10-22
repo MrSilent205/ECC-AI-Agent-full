@@ -4,9 +4,11 @@
  * Returns the formatter command that should be run for a given file.
  * This avoids shell execution assumptions while still giving precise guidance.
  * Supports cross-platform command generation.
+ *
+ * Framework-free (OpenCode v2): registered through `ctx.tool.transform` in
+ * `plugins/index.ts`. No `@opencode-ai/plugin` import.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
 import * as path from "path"
 import * as fs from "fs"
 
@@ -21,50 +23,44 @@ interface FormatResult {
   error?: string
 }
 
-const formatCodeTool: ToolDefinition = tool({
-  description:
-    "Detect formatter for a file and return the exact command to run (Biome, Prettier, Black, gofmt, rustfmt, swift-format). Supports cross-platform command generation.",
-  args: {
-    filePath: tool.schema.string().describe("Path to the file to format"),
-    formatter: tool.schema
-      .enum(["biome", "prettier", "black", "gofmt", "rustfmt", "swift-format"])
-      .optional()
-      .describe("Optional formatter override"),
-  },
-  async execute(args, context): Promise<string> {
-    try {
-      const cwd = context.worktree || context.directory
-      const ext = args.filePath.split(".").pop()?.toLowerCase() || ""
-      const detected = args.formatter || detectFormatter(cwd, ext)
+export interface FormatCodeInput {
+  filePath: string
+  formatter?: Formatter
+}
 
-      if (!detected) {
-        return JSON.stringify({
-          success: false,
-          message: `No formatter detected for .${ext} files`,
-          supportedFormatters: ["biome", "prettier", "black", "gofmt", "rustfmt", "swift-format"],
-        })
-      }
+export const formatCodeDescription =
+  "Detect formatter for a file and return the exact command to run (Biome, Prettier, Black, gofmt, rustfmt, swift-format). Supports cross-platform command generation."
 
-      const command = buildFormatterCommand(detected, args.filePath, cwd)
-      return JSON.stringify({
-        success: true,
-        formatter: detected,
-        command,
-        instructions: `Run this command:\n\n${command}`,
-        platform: process.platform,
-      })
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+export async function executeFormatCode(args: FormatCodeInput, cwd: string): Promise<string> {
+  try {
+    const ext = args.filePath.split(".").pop()?.toLowerCase() || ""
+    const detected = args.formatter || detectFormatter(cwd, ext)
+
+    if (!detected) {
       return JSON.stringify({
         success: false,
-        error: `Failed to detect formatter: ${errorMessage}`,
-        filePath: args.filePath,
+        message: `No formatter detected for .${ext} files`,
+        supportedFormatters: ["biome", "prettier", "black", "gofmt", "rustfmt", "swift-format"],
       })
     }
-  },
-})
 
-export default formatCodeTool
+    const command = buildFormatterCommand(detected, args.filePath, cwd)
+    return JSON.stringify({
+      success: true,
+      formatter: detected,
+      command,
+      instructions: `Run this command:\n\n${command}`,
+      platform: process.platform,
+    })
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    return JSON.stringify({
+      success: false,
+      error: `Failed to detect formatter: ${errorMessage}`,
+      filePath: args.filePath,
+    })
+  }
+}
 
 function detectFormatter(cwd: string, ext: string): Formatter | null {
   // Check for formatter config files
@@ -121,3 +117,12 @@ function buildFormatterCommand(formatter: Formatter, filePath: string, cwd?: str
 
   return commands[formatter]
 }
+
+export const formatCode = {
+  description: formatCodeDescription,
+  execute: async (rawArgs?: any, context?: any) => {
+    const cwd = context?.worktree || context?.directory || process.cwd();
+    return executeFormatCode((rawArgs ?? {}) as any, cwd);
+  },
+};
+

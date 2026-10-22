@@ -17,8 +17,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { builtinModules } = require('node:module');
-const { planContextCarrier } = require('../lib/context-carriers');
-const { loadContextRegistry } = require('../lib/context-pack-registry');
+const { planContextCarrierBatch } = require('../lib/context-carriers');
 const { DEFAULT_REPO_ROOT } = require('../lib/context-profile-support');
 
 const PROFILES = Object.freeze(['lean@1', 'full@1']);
@@ -160,7 +159,6 @@ function inspectProjection(carrier, profileId, read, report) {
 }
 
 function validate(repoRoot = DEFAULT_REPO_ROOT) {
-  const registry = loadContextRegistry({ repoRoot });
   const read = sourceReader(repoRoot);
   const report = {
     plannedFileCount: 0, scriptCount: 0, specifierCount: 0, resolvedCount: 0, dynamicCount: 0, packageCount: 0,
@@ -169,15 +167,34 @@ function validate(repoRoot = DEFAULT_REPO_ROOT) {
   const layouts = [];
   const unsupportedTargets = [];
 
+  // One registry snapshot for every target/profile carrier: the batch plans them
+  // all together instead of reloading the registry per carrier.
+  const { registry, carriers } = planContextCarrierBatch({ repoRoot, profileIds: PROFILES });
+  const carriersByTarget = new Map();
+  for (const carrier of carriers) {
+    const list = carriersByTarget.get(carrier.target);
+    if (list) list.push(carrier);
+    else carriersByTarget.set(carrier.target, [carrier]);
+  }
+  // Build closed entries in one pass instead of mutating a shared accumulator:
+  // each target maps to a frozen snapshot of its carriers and layout.
+  const byTarget = new Map();
+  for (const [target, list] of carriersByTarget) {
+    const withLayout = list.find(carrier => carrier.layout);
+    byTarget.set(target, Object.freeze({
+      layout: withLayout
+        ? Object.freeze({ target, layout: withLayout.layout.id, skillRoot: withLayout.layout.skillRoot })
+        : null,
+      carriers: Object.freeze([...list]),
+    }));
+  }
+
   for (const target of registry.targets) {
-    let supported = null;
-    for (const profileId of PROFILES) {
-      const carrier = planContextCarrier({ repoRoot, profileId, target });
-      if (!carrier.layout) break;
-      supported = { target, layout: carrier.layout.id, skillRoot: carrier.layout.skillRoot };
-      inspectProjection(carrier, profileId, read, report);
-    }
-    if (supported) layouts.push(supported); else unsupportedTargets.push(target);
+    const entry = byTarget.get(target);
+    if (!entry) continue;
+    if (!entry.layout) { unsupportedTargets.push(target); continue; }
+    layouts.push(entry.layout);
+    for (const carrier of entry.carriers) inspectProjection(carrier, carrier.profileId, read, report);
   }
 
   return {

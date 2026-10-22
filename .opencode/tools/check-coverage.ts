@@ -3,104 +3,94 @@
  *
  * Custom OpenCode tool to analyze test coverage and report on gaps.
  * Supports common coverage report formats.
+ *
+ * Framework-free (OpenCode v2): registered through `ctx.tool.transform` in
+ * `plugins/index.ts`. No `@opencode-ai/plugin` import.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
 import * as path from "path"
 import * as fs from "fs"
 
-const checkCoverageTool: ToolDefinition = tool({
-  description:
-    "Check test coverage against a threshold and identify files with low coverage. Reads coverage reports from common locations.",
-  args: {
-    threshold: tool.schema
-      .number()
-      .optional()
-      .describe("Minimum coverage percentage required (default: 80)"),
-    showUncovered: tool.schema
-      .boolean()
-      .optional()
-      .describe("Show list of uncovered files (default: true)"),
-    format: tool.schema
-      .enum(["summary", "detailed", "json"])
-      .optional()
-      .describe("Output format (default: summary)"),
-  },
-  async execute(args, context) {
-    const threshold = args.threshold ?? 80
-    const showUncovered = args.showUncovered ?? true
-    const format = args.format ?? "summary"
-    const cwd = context.worktree || context.directory
+export interface CheckCoverageInput {
+  threshold?: number
+  showUncovered?: boolean
+  format?: "summary" | "detailed" | "json"
+}
 
-    // Look for coverage reports
-    const coveragePaths = [
-      "coverage/coverage-summary.json",
-      "coverage/lcov-report/index.html",
-      "coverage/coverage-final.json",
-      ".nyc_output/coverage.json",
-    ]
+export const checkCoverageDescription =
+  "Check test coverage against a threshold and identify files with low coverage. Reads coverage reports from common locations."
 
-    let coverageData: CoverageSummary | null = null
-    let coverageFile: string | null = null
+export async function executeCheckCoverage(args: CheckCoverageInput, cwd: string): Promise<string> {
+  const threshold = args.threshold ?? 80
+  const showUncovered = args.showUncovered ?? true
+  const format = args.format ?? "summary"
 
-    for (const coveragePath of coveragePaths) {
-      const fullPath = path.join(cwd, coveragePath)
-      if (fs.existsSync(fullPath) && coveragePath.endsWith(".json")) {
-        try {
-          const content = JSON.parse(fs.readFileSync(fullPath, "utf-8"))
-          coverageData = parseCoverageData(content)
-          coverageFile = coveragePath
-          break
-        } catch {
-          // Continue to next file
-        }
+  // Look for coverage reports
+  const coveragePaths = [
+    "coverage/coverage-summary.json",
+    "coverage/lcov-report/index.html",
+    "coverage/coverage-final.json",
+    ".nyc_output/coverage.json",
+  ]
+
+  let coverageData: CoverageSummary | null = null
+  let coverageFile: string | null = null
+
+  for (const coveragePath of coveragePaths) {
+    const fullPath = path.join(cwd, coveragePath)
+    if (fs.existsSync(fullPath) && coveragePath.endsWith(".json")) {
+      try {
+        const content = JSON.parse(fs.readFileSync(fullPath, "utf-8"))
+        coverageData = parseCoverageData(content)
+        coverageFile = coveragePath
+        break
+      } catch {
+        // Continue to next file
       }
     }
+  }
 
-    if (!coverageData) {
-      return JSON.stringify({
-        success: false,
-        error: "No coverage report found",
-        suggestion:
-          "Run tests with coverage first: npm test -- --coverage",
-        searchedPaths: coveragePaths,
-      })
-    }
+  if (!coverageData) {
+    return JSON.stringify({
+      success: false,
+      error: "No coverage report found",
+      suggestion:
+        "Run tests with coverage first: npm test -- --coverage",
+      searchedPaths: coveragePaths,
+    })
+  }
 
-    const passed = coverageData.total.percentage >= threshold
-    const uncoveredFiles = coverageData.files.filter(
-      (f) => f.percentage < threshold
-    )
+  const passed = coverageData.total.percentage >= threshold
+  const uncoveredFiles = coverageData.files.filter(
+    (f) => f.percentage < threshold
+  )
 
-    const result: CoverageResult = {
-      success: passed,
-      threshold,
-      coverageFile,
-      total: coverageData.total,
-      passed,
-    }
+  const result: CoverageResult = {
+    success: passed,
+    threshold,
+    coverageFile,
+    total: coverageData.total,
+    passed,
+  }
 
-    if (format === "detailed" || (showUncovered && uncoveredFiles.length > 0)) {
-      result.uncoveredFiles = uncoveredFiles.slice(0, 20) // Limit to 20 files
-      result.uncoveredCount = uncoveredFiles.length
-    }
+  if (format === "detailed" || (showUncovered && uncoveredFiles.length > 0)) {
+    result.uncoveredFiles = uncoveredFiles.slice(0, 20) // Limit to 20 files
+    result.uncoveredCount = uncoveredFiles.length
+  }
 
-    if (format === "json") {
-      result.rawData = coverageData
-    }
+  if (format === "json") {
+    result.rawData = coverageData
+  }
 
-    if (!passed) {
-      result.suggestion = `Coverage is ${coverageData.total.percentage.toFixed(1)}% which is below the ${threshold}% threshold. Focus on these files:\n${uncoveredFiles
-        .slice(0, 5)
-        .map((f) => `- ${f.file}: ${f.percentage.toFixed(1)}%`)
-        .join("\n")}`
-    }
+  if (!passed) {
+    result.suggestion = `Coverage is ${coverageData.total.percentage.toFixed(1)}% which is below the ${threshold}% threshold. Focus on these files:\n${uncoveredFiles
+      .slice(0, 5)
+      .map((f) => `- ${f.file}: ${f.percentage.toFixed(1)}%`)
+      .join("\n")}`
+  }
 
-    return JSON.stringify(result)
-  },
-})
-
-export default checkCoverageTool
+  return JSON.stringify(result)
+}
 
 interface CoverageSummary {
   total: {
@@ -170,3 +160,12 @@ function parseCoverageData(data: unknown): CoverageSummary {
     files: [],
   }
 }
+
+export const checkCoverage = {
+  description: checkCoverageDescription,
+  execute: async (rawArgs?: any, context?: any) => {
+    const cwd = context?.worktree || context?.directory || process.cwd();
+    return executeCheckCoverage((rawArgs ?? {}) as any, cwd);
+  },
+};
+

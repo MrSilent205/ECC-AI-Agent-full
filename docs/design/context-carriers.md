@@ -10,6 +10,7 @@ M1 context profiles determine proposed discovery. Carrier layouts map that propo
 | --- | --- | --- |
 | P2a resource declarations | Registry and plan entries preserve sorted explicit `requiredResources` | `sourcePath` is the mandatory entrypoint; empty declarations do not prove resource or workflow closure |
 | P2b carrier planning | `planContextCarrier(options)` emits `ecc.context-carrier.v1` | Pure read-only file projection; no output destination, installed-state probe, or native activation |
+| P2b carrier planning | `planContextCarrierBatch(options)` emits one `ecc.context-carrier.v1` per profile/target pair from a single registry snapshot | Same read-only boundary; the snapshot is loaded inside the carrier library and re-read once to prove the sources did not move |
 | P2c acceptance fixtures | An independently checked disposable tree demonstrates structural materialization | Test-only writer owns its temporary parent; observed file equality does not prove native discovery or invocation |
 
 The generated registry/plan v1 shapes gain an additive `requiredResources` field. Existing profile IDs and declaration schemas retain their meanings. Inspection consumers should tolerate additional output fields. A new carrier consumer must reject an older object missing declaration metadata instead of interpreting it as an empty declaration.
@@ -27,6 +28,8 @@ node scripts/ecc.js profile carrier full@1 --target pi --exclude skill:python-pa
 The packaged command uses `ecc profile carrier` with the same arguments. Defaults match profile preview: Lean, Codex, and Auto selection intent. Auto remains recorded intent only. The JSON inspection envelope reports a warning and unobserved activation; its `carrier` object lists exact proposed files and source bindings. No files are written. Destination and hook flags are rejected.
 
 The [carrier library](../../scripts/lib/context-carriers.js) accepts the same source/profile/target/selection options as compilation. It compiles from canonical sources, verifies the loaded registry matches the compiled plan, and rejects externally supplied replacement plans or unknown options. Its output is checked against the [carrier schema](../../schemas/context-carrier.schema.json).
+
+`planContextCarrierBatch` plans many carriers from one registry snapshot. It accepts `profileIds` and an optional `targets` list, applies the same single-carrier rules, and re-reads the registry once after planning so a source change during the batch fails closed. A target without an implemented carrier layout stops after its first profile, exactly like the single-carrier path.
 
 The schema validates output shape and rejects unknown fields. Semantic relationships such as exact target/layout agreement and resource completeness are enforced by the generator and independent fixture verifier. Schema validation alone cannot certify a supplied artifact.
 

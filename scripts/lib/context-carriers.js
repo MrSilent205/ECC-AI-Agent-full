@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 const path = require('node:path');
-const { compileContextProfile } = require('./context-profiles');
+const { compileContextProfile, compileContextProfileBatch } = require('./context-profiles');
 const { loadContextRegistry } = require('./context-pack-registry');
 const {
   DEFAULT_REPO_ROOT, createSourceReader, digestObject, stableStringify,
@@ -10,6 +10,7 @@ const {
 } = require('./context-profile-support');
 
 const INPUT_KEYS = new Set(['repoRoot', 'profileId', 'selectionMode', 'target', 'include', 'exclude']);
+const BATCH_KEYS = new Set(['repoRoot', 'profileIds', 'targets']);
 const LAYOUTS = Object.freeze({
   claude: { id: 'claude-plugin@1', skillRoot: 'skills', manifestPath: '.claude-plugin/plugin.json' },
   codex: { id: 'codex-plugin@1', skillRoot: 'skills', manifestPath: '.codex-plugin/plugin.json' },
@@ -138,6 +139,42 @@ function planContextCarrier(options = {}) {
   if (registry.registryDigest !== context.registryDigest) {
     throw new Error('Registry digest changed between context compilation and carrier planning');
   }
+  return buildCarrier(context, registry);
+}
+
+/**
+ * Plan many carriers from a single registry snapshot, then prove the sources did
+ * not move while the batch was planned. A target without a carrier layout stops
+ * after its first profile, exactly like the single-carrier planning path.
+ */
+function planContextCarrierBatch(options = {}) {
+  for (const key of Reflect.ownKeys(options)) {
+    if (!BATCH_KEYS.has(key)) throw new Error(`Unknown carrier batch option: ${String(key)}`);
+  }
+  const { repoRoot = DEFAULT_REPO_ROOT, profileIds = [], targets = null } = options;
+  if (!Array.isArray(profileIds)) throw new Error('Carrier profile IDs must be an array');
+  if (targets !== null && !Array.isArray(targets)) throw new Error('Carrier targets must be an array');
+  const { registry, plans } = compileContextProfileBatch({
+    repoRoot,
+    projections: loaded => {
+      const requested = [];
+      for (const target of targets || loaded.targets) {
+        for (const profileId of profileIds) {
+          requested.push({ profileId, target });
+          if (!LAYOUTS[target]) break;
+        }
+      }
+      return requested;
+    },
+  });
+  const carriers = plans.map(context => buildCarrier(context, registry));
+  if (loadContextRegistry({ repoRoot }).registryDigest !== registry.registryDigest) {
+    throw new Error('Registry digest changed while carriers were planned');
+  }
+  return { registry, carriers };
+}
+
+function buildCarrier(context, registry) {
   const selected = selectedEntries(context, registry);
   const layout = LAYOUTS[context.target] || null;
   const files = layout ? [...copyDescriptors(selected, layout), ...generatedManifest(context.target, layout)] : [];
@@ -172,4 +209,4 @@ function planContextCarrier(options = {}) {
   return carrier;
 }
 
-module.exports = { planContextCarrier };
+module.exports = { planContextCarrier, planContextCarrierBatch };

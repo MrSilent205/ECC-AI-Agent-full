@@ -12,6 +12,7 @@ const fileSystem = { ...fs };
 const load = createFileSystemLoader(fileSystem);
 const { applyInstallPlan } = load(require.resolve('../../scripts/lib/install/apply'));
 const { withHookConsent } = require('../../scripts/lib/install/hook-consent');
+const { getDisabledOpenCodePluginContent } = require('../../scripts/lib/install/hook-consent');
 const { repairInstalledStates, buildDoctorReport } = load(require.resolve('../../scripts/lib/install-lifecycle'));
 const { createInstallState, readInstallState, writeInstallState } = require('../../scripts/lib/install-state');
 const { withOpenCodeInstallLocks } = load(require.resolve('../../scripts/lib/install/opencode-install-lock'));
@@ -177,9 +178,14 @@ function buildInertPayload(sourceRoot) {
 function runTests() {
   let passed = 0;
   let failed = 0;
+  let skipped = 0;
+  class SkipTest extends Error {}
   function test(name, callback) {
     try { privateFixture(callback); passed++; console.log(`  PASS ${name}`); }
-    catch (error) { failed++; console.error(`  FAIL ${name}: ${error.stack}`); }
+    catch (error) {
+      if (error instanceof SkipTest) { skipped++; console.log(`  SKIP ${name}: ${error.message}`); return; }
+      failed++; console.error(`  FAIL ${name}: ${error.stack}`);
+    }
   }
   test('legacy repair holds both roots before build and releases them after a throwing builder', value => {
     const beforeState = fs.readFileSync(value.legacyStatePath);
@@ -325,7 +331,7 @@ function runTests() {
       assert.ok(!state.resolution.selectedModules.includes('hooks-runtime'));
       assert.notStrictEqual(state.request.hookConsent, 'enabled');
       assert.strictEqual(fs.readFileSync(path.join(value.canonicalRoot, 'plugins/ecc-hooks.ts'), 'utf8'),
-        'export default async () => ({});\n');
+        getDisabledOpenCodePluginContent());
       assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(value.canonicalRoot, 'opencode.json'))).plugin, []);
       for (const relative of ['opencode.json', 'plugins/ecc-hooks.ts', 'ecc-install-state.json']) {
         assert.strictEqual(fs.existsSync(path.join(value.legacyRoot, relative)), false);
@@ -342,7 +348,19 @@ function runTests() {
       if (defect === 'missing-digest') delete state.operations[2].contentSha256;
       if (defect === 'source-mismatch') fs.writeFileSync(source, 'different trusted source\n');
       if (defect === 'source-missing') fs.unlinkSync(source);
-      if (defect === 'symlink') { fs.unlinkSync(plugin); fs.symlinkSync(source, plugin); }
+      if (defect === 'symlink') {
+        fs.unlinkSync(plugin);
+        try { fs.symlinkSync(source, plugin); }
+        catch (error) {
+          // Skip only where symlink creation is blocked (e.g. Windows without
+          // Developer Mode / admin rights → EPERM/EACCES); rethrow anything else
+          // so real failures aren't masked.
+          if (error && (error.code === 'EPERM' || error.code === 'EACCES')) {
+            throw new SkipTest(`symlink creation unavailable (${error.code})`);
+          }
+          throw error;
+        }
+      }
       if (defect === 'unrecorded-alias') fs.copyFileSync(source, path.join(value.legacyRoot, 'plugins/index.js'));
       if (defect === 'merge-json') state.operations[1].kind = 'merge-json';
       writeInstallState(value.legacyStatePath, state);
@@ -533,8 +551,8 @@ function runTests() {
       assert.deepStrictEqual(closed, opened, 'close each owned descriptor exactly once');
     });
   }
-  console.log(`\nResults: Passed: ${passed}, Failed: ${failed}`);
-  return { passed, failed };
+  console.log(`\nResults: Passed: ${passed}, Failed: ${failed}, Skipped: ${skipped}`);
+  return { passed, failed, skipped };
 }
 
 if (require.main === module) process.exitCode = runTests().failed ? 1 : 0;

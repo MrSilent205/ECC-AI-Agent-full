@@ -1,12 +1,22 @@
 /**
- * ECC Plugins for OpenCode
+ * ECC Plugin Hooks for OpenCode (framework-free)
  *
- * This module exports all ECC plugins for OpenCode integration.
- * Plugins provide hook-based automation that mirrors Claude Code's hook system
- * while taking advantage of OpenCode's more sophisticated 20+ event types.
+ * OpenCode v2-only plugin surface.
+ *
+ * Default export `{ id, setup }` where `setup(ctx)` registers hooks and
+ * tool transforms on the provided context. The context API is accessed
+ * defensively so the module stays loadable without the v2 runtime types.
+ *
+ * No `@opencode-ai/plugin` import, so this module loads in any directory
+ * without node_modules.
+ *
+ * This fork is optimized exclusively for OpenCode. For Claude/Codex use the
+ * upstream ECC repository.
  */
 
-export { ECCHooksPlugin, default } from "./ecc-hooks.ts"
+import { setupV2Hooks } from "./ecc/v2-hooks.ts"
 
-// Re-export for named imports
-export * from "./ecc-hooks.ts"
+export default {
+  id: "ecc-hooks",
+  setup: async (ctx: any) => await setupV2Hooks(ctx),
+}

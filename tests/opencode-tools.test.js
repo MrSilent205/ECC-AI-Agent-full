@@ -1,8 +1,13 @@
 /**
  * Tests for OpenCode custom tools
  * 
- * Tests the 7 custom tools: run-tests, check-coverage, security-audit, 
- * format-code, lint-check, git-summary, changed-files
+ * Tests the 8 custom tools: run-tests, check-coverage, security-audit, 
+ * format-code, lint-check, git-summary, changed-files, dependency-analyzer
+ *
+ * The tools are framework-free: each module exports a named object
+ * (`{ description, execute }`) instead of a default export, so the loader
+ * below resolves the export by name and fails loudly when a tool module
+ * cannot be loaded - a missing tool must never look like a passing suite.
  */
 
 const assert = require("node:assert")
@@ -16,14 +21,26 @@ function runTest(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`)
+      console.log(`  PASS ${name}`)
       return { passed: 1, failed: 0 }
     })
     .catch((error) => {
-      console.log(`  ✗ ${name}`)
+      console.log(`  FAIL ${name}`)
       console.error(`    ${error.stack || error.message}`)
       return { passed: 0, failed: 1 }
     })
+}
+
+// Built tool file -> the named export that carries the tool definition.
+const TOOL_EXPORTS = {
+  "format-code.js": "formatCode",
+  "lint-check.js": "lintCheck",
+  "git-summary.js": "gitSummary",
+  "changed-files.js": "changedFiles",
+  "run-tests.js": "runTests",
+  "check-coverage.js": "checkCoverage",
+  "security-audit.js": "securityAudit",
+  "dependency-analyzer.js": "dependencyAnalyzer",
 }
 
 async function loadTools() {
@@ -38,24 +55,20 @@ async function loadTools() {
   const tools = {}
   
   // Load each tool
-  const toolFiles = [
-    "format-code.js",
-    "lint-check.js",
-    "git-summary.js",
-    "changed-files.js",
-    "run-tests.js",
-    "check-coverage.js",
-    "security-audit.js",
-  ]
-  
-  for (const toolFile of toolFiles) {
+  for (const [toolFile, exportName] of Object.entries(TOOL_EXPORTS)) {
     const toolPath = path.join(toolsDir, toolFile)
-    if (fs.existsSync(toolPath)) {
-      const toolUrl = pathToFileURL(toolPath).href
-      const toolModule = await import(toolUrl)
-      const toolName = toolFile.replace(".js", "").replace("-", "")
-      tools[toolName] = toolModule.default || toolModule
-    }
+    assert.ok(
+      fs.existsSync(toolPath),
+      `missing built tool: ${toolPath} (run scripts/build-opencode.js)`
+    )
+    const toolModule = await import(pathToFileURL(toolPath).href)
+    const tool = toolModule[exportName]
+    assert.ok(
+      tool && typeof tool.execute === "function",
+      `${toolFile} must export ${exportName}() with an execute() function, got: ${Object.keys(toolModule).join(", ")}`
+    )
+    assert.strictEqual(typeof tool.description, "string", `${toolFile} must export a description`)
+    tools[exportName] = tool
   }
   
   return tools
@@ -89,14 +102,14 @@ async function main() {
   const tests = []
 
   // Test format-code tool
-  if (tools.formatcode) {
+  if (tools.formatCode) {
     tests.push([
       "format-code: detects TypeScript formatter",
       async () => withTempProject(
         ["tsconfig.json", "src/index.ts"],
         async (projectDir) => {
           const context = createMockContext(projectDir)
-          const result = await tools.formatcode.execute(
+          const result = await tools.formatCode.execute(
             { filePath: "src/index.ts" },
             context
           )
@@ -114,7 +127,7 @@ async function main() {
         ["tsconfig.json", "src/index.ts"],
         async (projectDir) => {
           const context = createMockContext(projectDir)
-          const result = await tools.formatcode.execute(
+          const result = await tools.formatCode.execute(
             { filePath: "src\\index.ts" },
             context
           )
@@ -132,7 +145,7 @@ async function main() {
         ["pyproject.toml", "src/main.py"],
         async (projectDir) => {
           const context = createMockContext(projectDir)
-          const result = await tools.formatcode.execute(
+          const result = await tools.formatCode.execute(
             { filePath: "src/main.py" },
             context
           )
@@ -150,7 +163,7 @@ async function main() {
         ["README.md"],
         async (projectDir) => {
           const context = createMockContext(projectDir)
-          const result = await tools.formatcode.execute(
+          const result = await tools.formatCode.execute(
             { filePath: "README.md" },
             context
           )
@@ -165,14 +178,14 @@ async function main() {
   }
 
   // Test lint-check tool
-  if (tools.lintcheck) {
+  if (tools.lintCheck) {
     tests.push([
       "lint-check: detects ESLint",
       async () => withTempProject(
         [".eslintrc.json", "src/index.ts"],
         async (projectDir) => {
           const context = createMockContext(projectDir)
-          const result = await tools.lintcheck.execute(
+          const result = await tools.lintCheck.execute(
             { target: "src" },
             context
           )
@@ -190,7 +203,7 @@ async function main() {
         ["biome.json", "src/index.ts"],
         async (projectDir) => {
           const context = createMockContext(projectDir)
-          const result = await tools.lintcheck.execute(
+          const result = await tools.lintCheck.execute(
             { target: "src" },
             context
           )
@@ -204,7 +217,7 @@ async function main() {
   }
 
   // Test git-summary tool
-  if (tools.gitsummary) {
+  if (tools.gitSummary) {
     tests.push([
       "git-summary: returns git information",
       async () => withTempProject(
@@ -221,7 +234,7 @@ async function main() {
           spawnSync("git", ["commit", "-m", "test commit"], { cwd: projectDir })
           
           const context = createMockContext(projectDir)
-          const result = await tools.gitsummary.execute(
+          const result = await tools.gitSummary.execute(
             { depth: 1, includeDiff: false },
             context
           )
@@ -235,7 +248,7 @@ async function main() {
   }
 
   // Test changed-files tool
-  if (tools.changedfiles) {
+  if (tools.changedFiles) {
     tests.push([
       "changed-files: reports an actionable, scrubbed error when plugins/lib is missing",
       async () => withTempProject([], async (projectDir) => {
@@ -252,7 +265,7 @@ async function main() {
         try {
           const context = createMockContext(projectDir)
           await assert.rejects(
-            () => tools.changedfiles.execute({}, context),
+            () => tools.changedFiles.execute({}, context),
             (error) => {
               assert.ok(error instanceof Error)
               assert.ok(
@@ -291,7 +304,7 @@ async function main() {
 
         try {
           const context = createMockContext(projectDir)
-          const result = await tools.changedfiles.execute({ format: "json" }, context)
+          const result = await tools.changedFiles.execute({ format: "json" }, context)
           const parsed = JSON.parse(result)
           assert.strictEqual(parsed.changed, true)
           assert.ok(

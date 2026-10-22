@@ -64,9 +64,12 @@ compileContextProfile({
   include: ['skill:security-review'],
   exclude: ['skill:python-patterns'],
 });
+compileContextProfileBatch({ repoRoot, profileIds: ['lean@1', 'full@1'] });
 ```
 
 The first two functions are exported by the registry library; the profile library exports the last two and re-exports `explainContextEntry`. The registry also exports `projectionFor(entry, target)` for already validated entries and targets. Consumers should use the loading and compilation APIs instead of duplicating source parsing or building another profile authority.
+
+`compileContextProfileBatch` compiles many profile/target projections from one registry snapshot. The snapshot is still produced by the canonical loader inside the profile library, so a caller declares which projections to compile and can never supply a cached or caller-built registry. A caller that derives its own projection list from the snapshot passes a `projections` function of the loaded registry. Single-projection callers keep using `compileContextProfile`, whose digest and budget behavior are unchanged.
 
 ## Inventory and selection semantics
 

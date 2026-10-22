@@ -24,3 +24,22 @@ execFileSync(process.execPath, [tscEntrypoint, "-p", path.join(opencodeDir, "tsc
   cwd: rootDir,
   stdio: "inherit",
 })
+
+// tsc's rewriteRelativeImportExtensions covers static imports/exports but can miss
+// some dynamic import() specifiers in the compiled output. Normalise them so
+// the published .js bundle matches the installed .ts source.
+function rewriteDynamicImportsForDist(dir) {
+  if (!fs.existsSync(dir)) return
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = path.join(dir, entry.name)
+    if (entry.isDirectory()) rewriteDynamicImportsForDist(entryPath)
+    else if (entry.name.endsWith(".js")) {
+      const source = fs.readFileSync(entryPath, "utf8")
+      const rewritten = source.replace(/import\((\s*["'])((?:\.\.?\/)[^"']+)\.ts(["']\s*)\)/g, (match, prefix, spec, suffix) =>
+        `import(${prefix}${spec}.js${suffix})`
+      )
+      if (rewritten !== source) fs.writeFileSync(entryPath, rewritten)
+    }
+  }
+}
+rewriteDynamicImportsForDist(distDir)

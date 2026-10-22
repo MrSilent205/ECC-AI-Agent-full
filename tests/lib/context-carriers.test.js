@@ -29,6 +29,10 @@ function plan(options) {
   return require(MODULE_PATH).planContextCarrier(options);
 }
 
+function planBatch(options) {
+  return require(MODULE_PATH).planContextCarrierBatch(options);
+}
+
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
@@ -351,3 +355,35 @@ test('real canonical inventory projects every selected bundled resource without 
     }
   }
 });
+
+test('a carrier batch plans every target from one registry snapshot', () => withFixture(root => {
+  const targets = registryLibrary.loadContextRegistry({ repoRoot: root }).targets;
+  const { registry, carriers } = planBatch({ repoRoot: root, profileIds: ['lean@1', 'full@1'] });
+  const expected = targets.reduce((count, target) => count + (Object.hasOwn(LAYOUTS, target) ? 2 : 1), 0);
+  assert.equal(carriers.length, expected);
+  assert.equal(registry.registryDigest, carriers[0].registryDigest);
+  for (const carrier of carriers) {
+    const single = plan({ repoRoot: root, profileId: carrier.profileId, target: carrier.target });
+    assert.equal(carrier.carrierDigest, single.carrierDigest);
+    assert.deepEqual(carrier.files, single.files);
+  }
+}));
+
+test('a carrier batch stops after the first profile for targets without a layout', () => withFixture(root => {
+  const targets = registryLibrary.loadContextRegistry({ repoRoot: root }).targets;
+  const { carriers } = planBatch({ repoRoot: root, profileIds: ['lean@1', 'full@1'] });
+  for (const target of targets.filter(value => !Object.hasOwn(LAYOUTS, value))) {
+    const planned = carriers.filter(carrier => carrier.target === target);
+    assert.equal(planned.length, 1);
+    assert.equal(planned[0].profileId, 'lean@1');
+    assert.equal(planned[0].status, 'unsupported');
+    assert.deepEqual(planned[0].files, []);
+  }
+}));
+
+test('a carrier batch validates its inputs and never accepts a caller-built registry', () => withFixture(root => {
+  for (const options of [
+    { profileIds: 'lean@1' }, { targets: 'codex' }, { registry: { entries: [] } },
+    { profileIds: ['lean@1'], targets: ['nope'] }, { profileIds: ['missing@1'] },
+  ]) assert.throws(() => planBatch({ repoRoot: root, ...options }));
+}));

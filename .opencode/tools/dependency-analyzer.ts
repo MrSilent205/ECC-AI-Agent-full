@@ -3,11 +3,22 @@
  *
  * Analyzes project dependencies for outdated packages, security vulnerabilities,
  * and unused dependencies. Supports multiple package managers.
+ *
+ * Framework-free (OpenCode v2): registered through `ctx.tool.transform` in
+ * `plugins/index.ts`. No `@opencode-ai/plugin` import.
  */
 
-import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool"
 import * as path from "path"
 import * as fs from "fs"
+
+export interface DependencyAnalyzerInput {
+  type?: "all" | "outdated" | "security" | "unused"
+  fix?: boolean
+  depth?: number
+}
+
+export const dependencyAnalyzerDescription =
+  "Analyze project dependencies for outdated packages, security vulnerabilities, and unused dependencies. Supports npm, pnpm, yarn, and bun."
 
 interface DependencyInfo {
   name: string
@@ -36,64 +47,43 @@ interface AnalysisResult {
   error?: string
 }
 
-const dependencyAnalyzerTool: ToolDefinition = tool({
-  description:
-    "Analyze project dependencies for outdated packages, security vulnerabilities, and unused dependencies. Supports npm, pnpm, yarn, and bun.",
-  args: {
-    type: tool.schema
-      .enum(["all", "outdated", "security", "unused"])
-      .optional()
-      .describe("Type of analysis to run (default: all)"),
-    fix: tool.schema
-      .boolean()
-      .optional()
-      .describe("Attempt to fix issues automatically (default: false)"),
-    depth: tool.schema
-      .number()
-      .optional()
-      .describe("Depth of dependency analysis (default: 1)"),
-  },
-  async execute(args, context): Promise<string> {
-    try {
-      const cwd = context.worktree || context.directory
-      const analysisType = args.type ?? "all"
-      const fix = args.fix ?? false
-      const depth = args.depth ?? 1
+export async function executeDependencyAnalyzer(args: DependencyAnalyzerInput, cwd: string): Promise<string> {
+  try {
+    const analysisType = args.type ?? "all"
+    const fix = args.fix ?? false
+    const depth = args.depth ?? 1
 
-      // Detect package manager
-      const packageManager = detectPackageManager(cwd)
-      
-      // Analyze dependencies
-      const dependencies = await analyzeDependencies(cwd, packageManager, depth)
-      
-      // Generate summary
-      const summary = generateSummary(dependencies)
-      
-      // Generate recommendations
-      const recommendations = generateRecommendations(dependencies, summary, analysisType)
+    // Detect package manager
+    const packageManager = detectPackageManager(cwd)
 
-      return JSON.stringify({
-        success: true,
-        packageManager,
-        dependencies: dependencies.slice(0, 50), // Limit output
-        summary,
-        recommendations,
-        analysisType,
-        fixMode: fix,
-        platform: process.platform,
-      })
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      return JSON.stringify({
-        success: false,
-        error: `Failed to analyze dependencies: ${errorMessage}`,
-        type: args.type,
-      })
-    }
-  },
-})
+    // Analyze dependencies
+    const dependencies = await analyzeDependencies(cwd, packageManager, depth)
 
-export default dependencyAnalyzerTool
+    // Generate summary
+    const summary = generateSummary(dependencies)
+
+    // Generate recommendations
+    const recommendations = generateRecommendations(dependencies, summary, analysisType)
+
+    return JSON.stringify({
+      success: true,
+      packageManager,
+      dependencies: dependencies.slice(0, 50), // Limit output
+      summary,
+      recommendations,
+      analysisType,
+      fixMode: fix,
+      platform: process.platform,
+    })
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    return JSON.stringify({
+      success: false,
+      error: `Failed to analyze dependencies: ${errorMessage}`,
+      type: args.type,
+    })
+  }
+}
 
 function detectPackageManager(cwd: string): string {
   if (fs.existsSync(path.join(cwd, "bun.lockb"))) return "bun"
@@ -219,3 +209,12 @@ function generateRecommendations(
   
   return recommendations
 }
+
+export const dependencyAnalyzer = {
+  description: dependencyAnalyzerDescription,
+  execute: async (rawArgs?: any, context?: any) => {
+    const cwd = context?.worktree || context?.directory || process.cwd();
+    return executeDependencyAnalyzer((rawArgs ?? {}) as any, cwd);
+  },
+};
+

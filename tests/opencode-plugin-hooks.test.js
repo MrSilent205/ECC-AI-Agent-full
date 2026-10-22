@@ -1,5 +1,10 @@
 /**
- * Tests for the published OpenCode hook plugin surface.
+ * Tests for the OpenCode v2 hook plugin surface.
+ *
+ * The plugin default-exports a v2 definition ({ id, setup }); setup registers
+ * hooks/transforms on the provided context. Tests drive setup with a fake
+ * context, capture the registered callbacks, and invoke them with v2-shaped
+ * events. Run with: node tests/opencode-plugin-hooks.test.js
  */
 
 const assert = require("node:assert")
@@ -13,11 +18,11 @@ function runTest(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`)
+      console.log(`  \u2713 ${name}`)
       return { passed: 1, failed: 0 }
     })
     .catch((error) => {
-      console.log(`  ✗ ${name}`)
+      console.log(`  \u2717 ${name}`)
       console.error(`    ${error.stack || error.message}`)
       return { passed: 0, failed: 1 }
     })
@@ -31,38 +36,143 @@ async function loadPlugin() {
   })
   assert.strictEqual(buildResult.status, 0, buildResult.stderr || buildResult.stdout)
   const pluginUrl = pathToFileURL(
-    path.join(repoRoot, ".opencode", "dist", "plugins", "ecc-hooks.js")
+    path.join(repoRoot, ".opencode", "dist", "plugins", "index.js")
   ).href
   return import(pluginUrl)
 }
 
-function createClient() {
-  const logs = []
-  return {
-    logs,
-    app: {
-      log: ({ body }) => {
-        logs.push(body)
-        return Promise.resolve()
-      },
-    },
+async function captureConsole(fn) {
+  const out = []
+  const methods = ["log", "warn", "error", "debug"]
+  const original = {}
+  for (const method of methods) {
+    original[method] = console[method]
+    console[method] = (...args) => {
+      out.push({ level: method, message: args.map(String).join(" ") })
+    }
+  }
+  try {
+    const result = await fn()
+    return { out, result }
+  } finally {
+    for (const method of methods) {
+      console[method] = original[method]
+    }
   }
 }
 
-function createFailingShell() {
-  const calls = []
-  const shell = (strings, ...values) => {
-    calls.push(String.raw({ raw: strings }, ...values))
-    const error = new Error("OpenCode plugin file probes must not use shell commands")
-    return {
-      then: (_resolve, reject) => reject(error),
-      text: async () => {
-        throw error
-      },
-    }
+function withProfile(value, fn) {
+  const previous = process.env.ECC_HOOK_PROFILE
+  process.env.ECC_HOOK_PROFILE = value
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (previous === undefined) delete process.env.ECC_HOOK_PROFILE
+      else process.env.ECC_HOOK_PROFILE = previous
+    })
+}
+
+/**
+ * Minimal fake of the v2 promise plugin context. Hook registrations are
+ * captured so tests can invoke them directly; `events` scripts the server
+ * event stream consumed by the session-lifecycle subscription.
+ */
+function createCtx(projectDir, events = []) {
+  const captured = {
+    toolBefore: [],
+    toolAfter: [],
+    shell: [],
+    permission: [],
+    session: {},
+    tools: [],
   }
-  shell.calls = calls
-  return shell
+  const noopRegistration = { dispose: async () => {} }
+  const ctx = {
+    location: {
+      directory: projectDir,
+      project: { id: "test-project", directory: projectDir },
+    },
+    options: {},
+    session: {
+      get: async () => ({ directory: projectDir }),
+      hook: async (name, callback) => {
+        captured.session[name] = callback
+        return noopRegistration
+      },
+    },
+    tool: {
+      hook: async (name, callback) => {
+        if (name === "execute.before") captured.toolBefore.push(callback)
+        else captured.toolAfter.push(callback)
+        return noopRegistration
+      },
+      transform: async (callback) => {
+        const added = []
+        callback({
+          add: (definition) => added.push(definition),
+          update: () => {},
+          remove: () => {},
+          list: () => [],
+          get: () => undefined,
+          namespace: () => {},
+        })
+        captured.tools.push(...added)
+        return noopRegistration
+      },
+    },
+    shell: {
+      hook: async (_name, callback) => {
+        captured.shell.push(callback)
+        return noopRegistration
+      },
+    },
+    permission: {
+      hook: async (_name, callback) => {
+        captured.permission.push(callback)
+        return noopRegistration
+      },
+    },
+    event: {
+      subscribe: () => {
+        async function* stream() {
+          for (const event of events) {
+            yield event
+          }
+        }
+        return stream()
+      },
+    },
+  }
+  return { ctx, captured }
+}
+
+async function setupPlugin(plugin, projectDir, events = []) {
+  const { ctx, captured } = createCtx(projectDir, events)
+  let cleanup
+  const { out } = await captureConsole(async () => {
+    cleanup = await plugin.default.setup(ctx)
+    // Let the event-subscription loop drain the scripted events.
+    for (let i = 0; i < 10; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+  })
+  return { captured, logs: out, cleanup }
+}
+
+function toolBeforeEvent(tool, input) {
+  return { tool, input, id: "call-1", sessionID: "session-1" }
+}
+
+function toolAfterEvent(tool, input) {
+  return { tool, input, id: "call-1", sessionID: "session-1", status: "completed", result: {} }
+}
+
+function shellEvent(cwd, env = {}) {
+  return { command: "", cwd, timeout: 1000, shell: "sh", env }
+}
+
+function permissionEvent(action, resources) {
+  return { sessionID: "session-1", action, resources, effect: "ask" }
 }
 
 async function withTempProject(files, fn) {
@@ -79,98 +189,27 @@ async function withTempProject(files, fn) {
   }
 }
 
-/**
- * Build a fake ECC installation root and copy the compiled plugin into it.
- *
- * Reproduces a *modular* install: the runtime scripts the plugin needs are
- * present, but `skills/` is absent because that directory belongs to the optional
- * `workflow-quality` module. `options.withSkills` adds it back so the same helper
- * can prove the difference is what matters.
- *
- * @param {{withSkills?: boolean}} [options]
- * @returns {string} path to the fake installation root
- */
-function createModularInstallRoot(options = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ecc-opencode-install-"))
-  const distSource = path.join(__dirname, "..", ".opencode", "dist")
-  const repoRoot = path.join(__dirname, "..")
-
-  for (const dir of ["plugins", "tools"]) {
-    fs.cpSync(path.join(distSource, dir), path.join(root, dir), { recursive: true })
-  }
-
-  // The runtime files an install without `workflow-quality` still ships. Copied
-  // whole rather than file-by-file: scripts/lib has transitive requires (utils.js
-  // alone pulls in agent-data-home), and a partial copy would fail the import for
-  // reasons unrelated to what this test is about.
-  for (const dir of ["hooks", "lib"]) {
-    fs.cpSync(path.join(repoRoot, "scripts", dir), path.join(root, "scripts", dir), {
-      recursive: true,
-    })
-  }
-
-  fs.writeFileSync(
-    path.join(root, "package.json"),
-    JSON.stringify({ name: "ecc-universal", version: "0.0.0-test", type: "module" })
-  )
-  fs.writeFileSync(path.join(root, "scripts", "package.json"), JSON.stringify({ type: "commonjs" }))
-
-  // The plugin's tools import @opencode-ai/plugin, which resolves through
-  // node_modules — a real installation has it, an isolated temp dir would not.
-  fs.symlinkSync(path.join(repoRoot, "node_modules"), path.join(root, "node_modules"), "junction")
-
-  if (options.withSkills) {
-    fs.mkdirSync(path.join(root, "skills", "continuous-learning-v2"), { recursive: true })
-    fs.writeFileSync(path.join(root, "skills", "continuous-learning-v2", "SKILL.md"), "# sentinel\n")
-  }
-
-  return root
-}
-
-/** Load the compiled plugin from a fake install root instead of the repo dist. */
-async function loadPluginFrom(root) {
-  return import(pathToFileURL(path.join(root, "plugins", "ecc-hooks.js")).href)
-}
-
-/**
- * Restore environment variables saved with Object.fromEntries of name -> value.
- *
- * @param {Record<string, string | undefined>} saved
- * @returns {void}
- */
-function restoreEnv(saved) {
-  for (const [key, value] of Object.entries(saved)) {
-    if (value === undefined) delete process.env[key]
-    else process.env[key] = value
-  }
-}
-
-/**
- * Read the skill-runs sink the tracker wrote under `homeDir`.
- *
- * The tracker resolves the sink from the *current* home, so the telemetry tests
- * move HOME/USERPROFILE to a temp dir and read from there.
- *
- * @param {string} homeDir
- * @returns {Array<Record<string, unknown>>}
- */
-function readRecordedRuns(homeDir) {
-  const runsFilePath = path.join(homeDir, ".claude", "state", "skill-runs.jsonl")
-  if (!fs.existsSync(runsFilePath)) return []
-  return fs
-    .readFileSync(runsFilePath, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line))
-}
-
 async function main() {
-  console.log("\n=== Testing OpenCode plugin hooks ===\n")
+  console.log("\n=== Testing OpenCode v2 plugin hooks ===\n")
 
-  const { ECCHooksPlugin } = await loadPlugin()
+  const plugin = await loadPlugin()
   const tests = [
     [
-      "plugin initializes and hooks stay usable when plugins/lib is missing",
+      "plugin default-exports a v2 definition with id and setup",
+      async () => {
+        assert.ok(plugin.default && typeof plugin.default === "object", "Expected an object default export")
+        assert.strictEqual(plugin.default.id, "ecc-hooks")
+        assert.strictEqual(typeof plugin.default.setup, "function")
+        // V1 is removed in this fork: no legacy `server` surface may return.
+        assert.strictEqual(
+          plugin.default.server,
+          undefined,
+          "Expected the legacy v1 server export to be removed"
+        )
+      },
+    ],
+    [
+      "plugin initializes and keeps working when plugins/lib is missing",
       async () => withTempProject([], async (projectDir) => {
         const repoRoot = path.join(__dirname, "..")
         const libDir = path.join(repoRoot, ".opencode", "dist", "plugins", "lib")
@@ -183,14 +222,15 @@ async function main() {
         )
         fs.renameSync(libDir, backupDir)
         try {
-          const client = createClient()
-          const $ = createFailingShell()
-
-          // Plugin initialization must resolve even though changed-files-store.js
+          // Plugin setup must resolve even though changed-files-store.js
           // cannot be found -- it must not throw and crash session startup (#2530).
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
+          const { captured, logs } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [
+              { type: "session.deleted", data: {} },
+            ])
+          )
 
-          const disabledWarnings = client.logs.filter(
+          const disabledWarnings = logs.filter(
             (entry) =>
               entry.level === "warn" &&
               entry.message.includes("[ECC] changed-files tracking disabled") &&
@@ -202,25 +242,25 @@ async function main() {
             "Expected exactly one warning when plugins/lib/changed-files-store.js cannot be loaded"
           )
 
-          // Every hook that touches the store must remain callable and must not throw.
-          await hooks["file.edited"]({ path: "src/example.ts" })
-          await hooks["tool.execute.after"]({ tool: "edit", args: { path: "src/other.ts" } }, {})
-          await hooks["session.deleted"]()
+          // Every store-touching hook must remain callable and must not throw.
+          await captured.toolAfter[0](toolAfterEvent("edit", { path: "src/other.ts" }))
+          const compaction = { system: [], messages: [], options: {}, tools: {} }
+          await captured.session.compaction(compaction)
+          assert.ok(compaction.system.length > 0, "Expected compaction to push ECC context")
         } finally {
           fs.renameSync(backupDir, libDir)
         }
       }),
     ],
     [
-      "changed-files tracking records and clears through the plugin hooks",
+      "changed-files tracking records and clears through the v2 hooks",
       async () => withTempProject([], async (projectDir) => {
-        const client = createClient()
-        const $ = createFailingShell()
-
-        const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
+        const { captured, logs } = await withProfile("standard", () =>
+          setupPlugin(plugin, projectDir, [])
+        )
 
         assert.ok(
-          !client.logs.some(
+          !logs.some(
             (entry) => entry.level === "warn" && entry.message.includes("changed-files tracking disabled")
           ),
           "Did not expect a disabled warning when plugins/lib is present"
@@ -231,47 +271,83 @@ async function main() {
         ).href
         const store = await import(storeUrl)
 
-        await hooks["file.edited"]({ path: "src/example.ts" })
-        assert.ok(
-          store
-            .getChangedPaths()
-            .some(
-              (entry) =>
-                entry.path === path.normalize("src/example.ts") &&
-                entry.changeType === "modified"
-            ),
-          "Expected file.edited to record a change via the plugin hook"
-        )
-
-        await hooks["tool.execute.after"]({ tool: "edit", args: { path: "src/other.ts" } }, {})
+        await captured.toolAfter[0](toolAfterEvent("edit", { path: "src/other.ts" }))
         assert.ok(
           store
             .getChangedPaths()
             .some((entry) => entry.path === path.normalize("src/other.ts")),
-          "Expected tool.execute.after to record a change for the edit tool"
+          "Expected execute.after to record a change for the edit tool"
         )
 
-        await hooks["session.deleted"]()
+        // v1 file.watcher.updated is now the filesystem.changed server event.
+        const { captured: captured2 } = await withProfile("standard", () =>
+          setupPlugin(plugin, projectDir, [
+            { type: "filesystem.changed", data: { file: "src/example.ts", event: "change" } },
+            { type: "session.deleted", data: {} },
+          ])
+        )
+        assert.ok(captured2, "Expected second setup to resolve")
         assert.ok(!store.hasChanges(), "Expected session.deleted to clear tracked changes")
       }),
     ],
     [
-      "shell.env detects project markers without shelling out to test -f",
+      "execute.before classifies a new write as added and an existing write as modified",
+      async () => withTempProject(["src/existing.ts"], async (projectDir) => {
+        const { captured } = await withProfile("standard", () =>
+          setupPlugin(plugin, projectDir, [])
+        )
+
+        const storeUrl = pathToFileURL(
+          path.join(__dirname, "..", ".opencode", "dist", "plugins", "lib", "changed-files-store.js")
+        ).href
+        const store = await import(storeUrl)
+        store.clearChanges()
+
+        // The before hook records the pending write kind; the after hook consumes it.
+        await captured.toolBefore[0](toolBeforeEvent("write", { path: "src/created.ts" }))
+        await captured.toolAfter[0](toolAfterEvent("write", { path: "src/created.ts" }))
+
+        await captured.toolBefore[0](toolBeforeEvent("write", { path: "src/existing.ts" }))
+        await captured.toolAfter[0](toolAfterEvent("write", { path: "src/existing.ts" }))
+
+        const byPath = new Map(
+          store.getChangedPaths().map((entry) => [entry.path, entry.changeType])
+        )
+        assert.strictEqual(
+          byPath.get(path.normalize("src/created.ts")),
+          "added",
+          "Expected execute.before to record a new write as added"
+        )
+        assert.strictEqual(
+          byPath.get(path.normalize("src/existing.ts")),
+          "modified",
+          "Expected execute.before to record an existing write as modified"
+        )
+
+        // Without the before hook the same write falls back to modified.
+        store.clearChanges()
+        await captured.toolAfter[0](toolAfterEvent("write", { path: "src/created.ts" }))
+        assert.strictEqual(
+          store.getChangedPaths()[0].changeType,
+          "modified",
+          "Expected a write without a before event to fall back to modified"
+        )
+      }),
+    ],
+    [
+      "shell hook detects project markers without shelling out to test -f",
       async () => withTempProject(
         ["pnpm-lock.yaml", "tsconfig.json", "pyproject.toml"],
         async (projectDir) => {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
 
-          const existingEnv = Object.freeze({ EXISTING_ENV: "preserved" })
-          const output = { env: existingEnv }
-          await hooks["shell.env"]({ cwd: projectDir }, output)
-          const { env } = output
+          assert.strictEqual(captured.shell.length, 1, "Expected one shell hook registration")
+          const event = shellEvent(projectDir)
+          await captured.shell[0](event)
+          const env = event.env
 
-          assert.deepStrictEqual($.calls, [], `Unexpected shell probes: ${$.calls.join(", ")}`)
-          assert.strictEqual(env.EXISTING_ENV, "preserved")
-          assert.notStrictEqual(env, existingEnv)
           assert.strictEqual(env.PROJECT_ROOT, projectDir)
           assert.strictEqual(env.PACKAGE_MANAGER, "pnpm")
           assert.strictEqual(env.DETECTED_LANGUAGES, "typescript,python")
@@ -285,15 +361,14 @@ async function main() {
     [
       "session.created checks CLAUDE.md through fs instead of shell test",
       async () => withTempProject(["CLAUDE.md"], async (projectDir) => {
-        const client = createClient()
-        const $ = createFailingShell()
-        const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
+        const { logs } = await withProfile("standard", () =>
+          setupPlugin(plugin, projectDir, [
+            { type: "session.created", data: { directory: projectDir } },
+          ])
+        )
 
-        await hooks["session.created"]()
-
-        assert.deepStrictEqual($.calls, [], `Unexpected shell probes: ${$.calls.join(", ")}`)
         assert.ok(
-          client.logs.some((entry) => entry.message === "[ECC] Found CLAUDE.md - loading project context"),
+          logs.some((entry) => entry.message === "[ECC] Found CLAUDE.md - loading project context"),
           "Expected CLAUDE.md detection log"
         )
       }),
@@ -305,15 +380,14 @@ async function main() {
         try {
           fs.mkdirSync(path.join(projectDir, "CLAUDE.md"))
 
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
+          const { logs } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [
+              { type: "session.created", data: { directory: projectDir } },
+            ])
+          )
 
-          await hooks["session.created"]()
-
-          assert.deepStrictEqual($.calls, [], `Unexpected shell probes: ${$.calls.join(", ")}`)
           assert.ok(
-            !client.logs.some((entry) => entry.message === "[ECC] Found CLAUDE.md - loading project context"),
+            !logs.some((entry) => entry.message === "[ECC] Found CLAUDE.md - loading project context"),
             "Directory named CLAUDE.md should not be treated as project context"
           )
         } finally {
@@ -322,375 +396,235 @@ async function main() {
       },
     ],
     [
-      "shell.env ignores directories named like lockfiles and language markers",
+      "shell hook ignores directories named like lockfiles and language markers",
       async () => {
         const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "ecc-opencode-plugin-"))
         try {
           fs.mkdirSync(path.join(projectDir, "pnpm-lock.yaml"))
           fs.mkdirSync(path.join(projectDir, "tsconfig.json"))
 
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
 
-          const output = { env: {} }
-          await hooks["shell.env"]({ cwd: projectDir }, output)
-          const { env } = output
+          const event = shellEvent(projectDir)
+          await captured.shell[0](event)
 
-          assert.deepStrictEqual($.calls, [], `Unexpected shell probes: ${$.calls.join(", ")}`)
-          assert.strictEqual(env.PROJECT_ROOT, projectDir)
-          assert.ok(!("PACKAGE_MANAGER" in env), "Lockfile directory should not set PACKAGE_MANAGER")
-          assert.ok(!("DETECTED_LANGUAGES" in env), "Marker directory should not set DETECTED_LANGUAGES")
-          assert.ok(!("PRIMARY_LANGUAGE" in env), "Marker directory should not set PRIMARY_LANGUAGE")
+          assert.ok(!("PACKAGE_MANAGER" in event.env), "Lockfile directory should not set PACKAGE_MANAGER")
+          assert.ok(!("DETECTED_LANGUAGES" in event.env), "Marker directory should not set DETECTED_LANGUAGES")
+          assert.ok(!("PRIMARY_LANGUAGE" in event.env), "Marker directory should not set PRIMARY_LANGUAGE")
         } finally {
           fs.rmSync(projectDir, { recursive: true, force: true })
         }
       },
     ],
     [
-      "compacting appends ECC context without replacing the host compaction prompt",
-      async () => withTempProject([], async (projectDir) => {
-        const client = createClient()
-        const $ = createFailingShell()
-        const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
-        const existingContext = Object.freeze(["Existing plugin context"])
-        const output = { context: existingContext }
-
-        await hooks["experimental.session.compacting"]({ sessionID: "session-1" }, output)
-
-        assert.strictEqual(output.context[0], "Existing plugin context")
-        assert.notStrictEqual(output.context, existingContext)
-        const prompt = output.prompt ?? ["Default compaction prompt", ...output.context].join("\n\n")
-        assert.ok(prompt.includes("Default compaction prompt"))
-        assert.ok(prompt.includes("# ECC Context"))
-        assert.ok(prompt.includes("Current task status and progress"))
-        assert.deepStrictEqual($.calls, [])
-      }),
-    ],
-    [
-      "compacting appends ECC guidance to custom prompts, including an empty prompt",
-      async () => withTempProject([], async (projectDir) => {
-        const client = createClient()
-        const $ = createFailingShell()
-        const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
-
-        for (const customPrompt of ["Another plugin's custom prompt", ""]) {
-          const existingContext = Object.freeze(["Existing plugin context"])
-          const output = { context: existingContext, prompt: customPrompt }
-          await hooks["experimental.session.compacting"]({ sessionID: "session-1" }, output)
-
-          const prompt = output.prompt ?? ["Default compaction prompt", ...output.context].join("\n\n")
-          assert.ok(prompt.startsWith(`${customPrompt}\n\n`))
-          assert.ok(prompt.includes("# ECC Context"))
-          assert.ok(prompt.includes("Current task status and progress"))
-          assert.strictEqual(output.context, existingContext)
-        }
-        assert.deepStrictEqual($.calls, [])
-      }),
-    ],
-    [
-      "permission.ask handles read-only tools correctly",
+      "permission hook handles read-only actions correctly",
       async () => withTempProject(
         [],
         async (projectDir) => {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
+          assert.strictEqual(captured.permission.length, 1, "Expected one permission hook registration")
 
-          // Test read-only tools
-          const readResult = await hooks["permission.ask"]({ tool: "read", args: {} })
-          assert.strictEqual(readResult.approved, true)
-          assert.strictEqual(readResult.reason, "Read-only operation")
-
-          const globResult = await hooks["permission.ask"]({ tool: "glob", args: {} })
-          assert.strictEqual(globResult.approved, true)
-          assert.strictEqual(globResult.reason, "Read-only operation")
-
-          const grepResult = await hooks["permission.ask"]({ tool: "grep", args: {} })
-          assert.strictEqual(grepResult.approved, true)
-          assert.strictEqual(grepResult.reason, "Read-only operation")
+          for (const action of ["read", "glob", "grep"]) {
+            const event = permissionEvent(action, [])
+            await captured.permission[0](event)
+            assert.strictEqual(event.effect, "allow", `Expected allow for ${action}`)
+            assert.strictEqual(event.message, "Read-only operation")
+          }
         }
       ),
     ],
     [
-      "permission.ask handles formatters correctly",
+      "permission hook handles formatters correctly",
       async () => withTempProject(
         [],
         async (projectDir) => {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
 
-          // Test formatter tools - note: args should be the command string, not object
-          const prettierResult = await hooks["permission.ask"]({ 
-            tool: "bash", 
-            args: "npx prettier --write src/index.ts" 
-          })
-          console.log("prettierResult:", JSON.stringify(prettierResult))
-          assert.strictEqual(prettierResult.approved, true)
-          assert.strictEqual(prettierResult.reason, "Formatter execution")
+          const prettierEvent = permissionEvent("bash", ["npx prettier --write src/index.ts"])
+          await captured.permission[0](prettierEvent)
+          assert.strictEqual(prettierEvent.effect, "allow")
+          assert.strictEqual(prettierEvent.message, "Formatter execution")
 
-          const biomeResult = await hooks["permission.ask"]({ 
-            tool: "bash", 
-            args: "npx @biomejs/biome format --write src/index.ts" 
-          })
-          console.log("biomeResult:", JSON.stringify(biomeResult))
-          assert.strictEqual(biomeResult.approved, true)
-          assert.strictEqual(biomeResult.reason, "Formatter execution")
+          const biomeEvent = permissionEvent("bash", ["npx @biomejs/biome format --write src/index.ts"])
+          await captured.permission[0](biomeEvent)
+          assert.strictEqual(biomeEvent.effect, "allow")
+          assert.strictEqual(biomeEvent.message, "Formatter execution")
         }
       ),
     ],
     [
-      "permission.ask handles test execution correctly",
+      "permission hook handles test execution correctly",
       async () => withTempProject(
         [],
         async (projectDir) => {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
 
-          // Test test execution tools
-          const npmTestResult = await hooks["permission.ask"]({ 
-            tool: "bash", 
-            args: { command: "npm test" } 
-          })
-          assert.strictEqual(npmTestResult.approved, true)
-          assert.strictEqual(npmTestResult.reason, "Test execution")
+          const npmTestEvent = permissionEvent("bash", ["npm test"])
+          await captured.permission[0](npmTestEvent)
+          assert.strictEqual(npmTestEvent.effect, "allow")
+          assert.strictEqual(npmTestEvent.message, "Test execution")
 
-          const vitestResult = await hooks["permission.ask"]({ 
-            tool: "bash", 
-            args: { command: "npx vitest run" } 
-          })
-          assert.strictEqual(vitestResult.approved, true)
-          assert.strictEqual(vitestResult.reason, "Test execution")
+          const vitestEvent = permissionEvent("bash", ["npx vitest run"])
+          await captured.permission[0](vitestEvent)
+          assert.strictEqual(vitestEvent.effect, "allow")
+          assert.strictEqual(vitestEvent.message, "Test execution")
+
+          const goTestEvent = permissionEvent("bash", ["go test -run TestSomething"])
+          await captured.permission[0](goTestEvent)
+          assert.strictEqual(goTestEvent.effect, "allow")
+          assert.strictEqual(goTestEvent.message, "Test execution")
         }
       ),
     ],
     [
-      "skill telemetry records a run through the shared tracker (#2463)",
-      async () => withTempProject([], async (projectDir) => {
-        const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ecc-opencode-skill-home-"))
-        const previousHome = process.env.HOME
-        const previousUserProfile = process.env.USERPROFILE
-        process.env.HOME = homeDir
-        process.env.USERPROFILE = homeDir
-        try {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
+      "permission hook keeps unknown bash commands at ask",
+      async () => withTempProject(
+        [],
+        async (projectDir) => {
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
 
+          const risky = permissionEvent("bash", ["rm -rf /"])
+          await captured.permission[0](risky)
+          assert.strictEqual(risky.effect, "ask", "Expected unknown bash commands to stay ask")
+        }
+      ),
+    ],
+    [
+      "permission hook refuses compound shell commands",
+      async () => withTempProject(
+        [],
+        async (projectDir) => {
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
+
+          for (const command of [
+            "npm test; printf MARKER",
+            "npm test && rm -rf dist",
+            "prettier --write src/index.ts || whoami",
+            "npm test | tee /tmp/out",
+            "npm test\nrm -rf dist",
+            "npm test $(whoami)",
+            "npm test `whoami`",
+            "npx prettier --write src/index.ts > /tmp/out",
+          ]) {
+            const event = permissionEvent("bash", [command])
+            await captured.permission[0](event)
+            assert.strictEqual(event.effect, "ask", `Expected ask for ${JSON.stringify(command)}`)
+          }
+        }
+      ),
+    ],
+    [
+      "permission hook refuses code-loading flags",
+      async () => withTempProject(
+        [],
+        async (projectDir) => {
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
+
+          for (const command of [
+            "go test -exec /tmp/x ./...",
+            "npx prettier --plugin ./x.js",
+            "cargo test --config build.rustc-wrapper=/tmp/x",
+            "npx jest --setupFiles ./x.js",
+            "npx vitest --import ./x.js",
+            "pytest --require ./x.py",
+            "pytest -pevil_module",
+            "pytest -pevil_module tests/",
+            "pytest -p=evil_module",
+            "pytest -p evil_module",
+          ]) {
+            const event = permissionEvent("bash", [command])
+            await captured.permission[0](event)
+            assert.strictEqual(event.effect, "ask", `Expected ask for ${JSON.stringify(command)}`)
+          }
+        }
+      ),
+    ],
+    [
+      "permission hook requires every resource to pass the allowlist",
+      async () => withTempProject(
+        [],
+        async (projectDir) => {
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
+
+          const mixed = permissionEvent("bash", ["npm test", "rm -rf /"])
+          await captured.permission[0](mixed)
+          assert.strictEqual(mixed.effect, "ask", "Expected mixed resources to stay ask")
+
+          const empty = permissionEvent("bash", [])
+          await captured.permission[0](empty)
+          assert.strictEqual(empty.effect, "ask", "Expected a bash request with no resource to stay ask")
+        }
+      ),
+    ],
+    [
+      "compaction hook preserves ECC context with version banner",
+      async () => withTempProject(
+        [],
+        async (projectDir) => {
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [])
+          )
+
+          const event = { system: [], messages: [], options: {}, tools: {} }
+          await captured.session.compaction(event)
+          assert.strictEqual(event.system.length, 1, "Expected one system block")
+          assert.match(event.system[0].text, /## Active Plugin: ECC v\d+\.\d+\.\d+/)
+        }
+      ),
+    ],
+    [
+      "tool transform registers the changed-files and dependency-analyzer tools",
+      async () => withTempProject(
+        [],
+        async (projectDir) => {
+          const { captured } = await withProfile("standard", () =>
+            setupPlugin(plugin, projectDir, [
+              { type: "session.deleted", data: {} },
+            ])
+          )
+
+          const names = captured.tools.map((tool) => tool.name).sort()
+          assert.deepStrictEqual(names, ["changed-files", "dependency-analyzer"])
+
+          const changedFiles = captured.tools.find((tool) => tool.name === "changed-files")
+          const emptyResult = await changedFiles.execute({})
           assert.ok(
-            !client.logs.some(
-              (entry) =>
-                entry.level === "warn" && entry.message.includes("skill-run telemetry disabled")
-            ),
-            "Did not expect telemetry to be disabled when scripts/hooks/skill-run-tracker.js is present"
+            emptyResult.content.includes('"changed":false'),
+            `Expected empty-store payload, got: ${emptyResult.content}`
           )
 
-          // OpenCode names the tool `skill`; the id arrives on `name`.
-          await hooks["tool.execute.after"]({ tool: "skill", args: { name: "code-review" } }, {})
-
-          const records = readRecordedRuns(homeDir)
-
-          assert.strictEqual(records.length, 1, "Expected exactly one recorded skill run")
-          assert.strictEqual(records[0].skill_id, "code-review")
-          assert.strictEqual(records[0].outcome, "success")
-        } finally {
-          restoreEnv({ HOME: previousHome, USERPROFILE: previousUserProfile })
-          fs.rmSync(homeDir, { recursive: true, force: true })
+          const analyzer = captured.tools.find((tool) => tool.name === "dependency-analyzer")
+          const analysis = JSON.parse((await analyzer.execute({})).content)
+          assert.strictEqual(analysis.success, false, "Temp project has no package.json")
         }
-      }),
+      ),
     ],
     [
-      "skill telemetry records nothing for other tools",
+      "setup returns a cleanup function that stops the event subscription",
       async () => withTempProject([], async (projectDir) => {
-        const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ecc-opencode-skill-home-"))
-        const previousHome = process.env.HOME
-        const previousUserProfile = process.env.USERPROFILE
-        process.env.HOME = homeDir
-        process.env.USERPROFILE = homeDir
-        try {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
-
-          await hooks["tool.execute.after"]({ tool: "edit", args: { path: "src/a.ts" } }, {})
-          await hooks["tool.execute.after"]({ tool: "bash", args: { command: "ls" } }, {})
-
-          assert.strictEqual(readRecordedRuns(homeDir).length, 0)
-        } finally {
-          restoreEnv({ HOME: previousHome, USERPROFILE: previousUserProfile })
-          fs.rmSync(homeDir, { recursive: true, force: true })
-        }
+        const { cleanup } = await withProfile("standard", () =>
+          setupPlugin(plugin, projectDir, [{ type: "session.created", data: {} }])
+        )
+        assert.strictEqual(typeof cleanup, "function", "Expected setup to return a cleanup function")
+        await cleanup()
+        await cleanup()
       }),
-    ],
-    [
-      "skill telemetry respects the minimal hook profile",
-      async () => withTempProject([], async (projectDir) => {
-        const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ecc-opencode-skill-home-"))
-        const previousHome = process.env.HOME
-        const previousUserProfile = process.env.USERPROFILE
-        const previousProfile = process.env.ECC_HOOK_PROFILE
-        process.env.HOME = homeDir
-        process.env.USERPROFILE = homeDir
-        process.env.ECC_HOOK_PROFILE = "minimal"
-        try {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
-
-          await hooks["tool.execute.after"]({ tool: "skill", args: { name: "code-review" } }, {})
-
-          assert.strictEqual(readRecordedRuns(homeDir).length, 0)
-        } finally {
-          restoreEnv({
-            HOME: previousHome,
-            USERPROFILE: previousUserProfile,
-            ECC_HOOK_PROFILE: previousProfile,
-          })
-          fs.rmSync(homeDir, { recursive: true, force: true })
-        }
-      }),
-    ],
-    [
-      "shell.env exports CLAUDE_PLUGIN_ROOT so commands can resolve the ECC root",
-      async () => withTempProject([], async (projectDir) => {
-        const previousRoot = process.env.CLAUDE_PLUGIN_ROOT
-        delete process.env.CLAUDE_PLUGIN_ROOT
-        try {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
-
-          const output = { env: {} }
-          await hooks["shell.env"]({ cwd: projectDir }, output)
-
-          assert.deepStrictEqual($.calls, [], `Unexpected shell probes: ${$.calls.join(", ")}`)
-          assert.ok(output.env.CLAUDE_PLUGIN_ROOT, "Expected CLAUDE_PLUGIN_ROOT to be exported")
-
-          // The resolver consumes this variable verbatim, so it must be a
-          // directory that actually carries the ECC script tree.
-          const root = output.env.CLAUDE_PLUGIN_ROOT
-          assert.ok(
-            fs.existsSync(path.join(root, "scripts", "lib", "resolve-ecc-root.js")),
-            `Expected ${root} to contain scripts/lib/resolve-ecc-root.js`
-          )
-        } finally {
-          restoreEnv({ CLAUDE_PLUGIN_ROOT: previousRoot })
-        }
-      }),
-    ],
-    [
-      "shell.env does not override a CLAUDE_PLUGIN_ROOT the user set",
-      async () => withTempProject([], async (projectDir) => {
-        const explicitRoot = path.join(projectDir, "explicit-root")
-        const previousRoot = process.env.CLAUDE_PLUGIN_ROOT
-        process.env.CLAUDE_PLUGIN_ROOT = explicitRoot
-        try {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
-
-          const output = { env: {} }
-          await hooks["shell.env"]({ cwd: projectDir }, output)
-
-          assert.strictEqual(
-            output.env.CLAUDE_PLUGIN_ROOT,
-            undefined,
-            "the plugin must not inject its own root over one the user set"
-          )
-          assert.strictEqual(
-            process.env.CLAUDE_PLUGIN_ROOT,
-            explicitRoot,
-            "the user's value must survive untouched"
-          )
-        } finally {
-          restoreEnv({ CLAUDE_PLUGIN_ROOT: previousRoot })
-        }
-      }),
-    ],
-    [
-      "shell.env does not clobber a root another plugin already put in output.env",
-      async () => withTempProject([], async (projectDir) => {
-        const previousRoot = process.env.CLAUDE_PLUGIN_ROOT
-        delete process.env.CLAUDE_PLUGIN_ROOT
-        try {
-          const client = createClient()
-          const $ = createFailingShell()
-          const hooks = await ECCHooksPlugin({ client, $, directory: projectDir })
-
-          // An earlier plugin chose a root. The final merge below spreads our env
-          // over output.env, so a guard that only checked process.env would
-          // replace this value.
-          const output = { env: { CLAUDE_PLUGIN_ROOT: path.join(projectDir, "other-plugin-root") } }
-          await hooks["shell.env"]({ cwd: projectDir }, output)
-
-          assert.strictEqual(
-            output.env.CLAUDE_PLUGIN_ROOT,
-            path.join(projectDir, "other-plugin-root"),
-            "an existing output.env root must be preserved"
-          )
-        } finally {
-          restoreEnv({ CLAUDE_PLUGIN_ROOT: previousRoot })
-        }
-      }),
-    ],
-    [
-      "telemetry and root export work in a modular install without optional skills",
-      async () => {
-        // Regression: root detection probed skills/continuous-learning-v2, which
-        // belongs to the optional workflow-quality module. An install with
-        // platform-configs + hooks-runtime but without workflow-quality still
-        // ships the plugin and the tracker, and it lost both fixes.
-        const root = createModularInstallRoot()
-        const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "ecc-opencode-modular-"))
-        const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ecc-opencode-skill-home-"))
-        const previousHome = process.env.HOME
-        const previousUserProfile = process.env.USERPROFILE
-        const previousRoot = process.env.CLAUDE_PLUGIN_ROOT
-        process.env.HOME = homeDir
-        process.env.USERPROFILE = homeDir
-        delete process.env.CLAUDE_PLUGIN_ROOT
-        try {
-          assert.ok(
-            !fs.existsSync(path.join(root, "skills")),
-            "the fixture must not contain skills/, or it would not test the modular case"
-          )
-
-          const { ECCHooksPlugin: modularPlugin } = await loadPluginFrom(root)
-          const client = createClient()
-          const hooks = await modularPlugin({
-            client,
-            $: createFailingShell(),
-            directory: projectDir,
-          })
-
-          assert.ok(
-            !client.logs.some(
-              (entry) =>
-                entry.level === "warn" && entry.message.includes("skill-run telemetry disabled")
-            ),
-            "telemetry must stay enabled when the optional skills module is absent"
-          )
-
-          await hooks["tool.execute.after"]({ tool: "skill", args: { name: "code-review" } }, {})
-          assert.strictEqual(readRecordedRuns(homeDir).length, 1, "expected the run to be recorded")
-
-          const output = { env: {} }
-          await hooks["shell.env"]({ cwd: projectDir }, output)
-          assert.strictEqual(output.env.CLAUDE_PLUGIN_ROOT, fs.realpathSync(root))
-          assert.strictEqual(output.env.ECC_VERSION, "0.0.0-test")
-        } finally {
-          restoreEnv({
-            HOME: previousHome,
-            USERPROFILE: previousUserProfile,
-            CLAUDE_PLUGIN_ROOT: previousRoot,
-          })
-          fs.rmSync(root, { recursive: true, force: true })
-          fs.rmSync(projectDir, { recursive: true, force: true })
-          fs.rmSync(homeDir, { recursive: true, force: true })
-        }
-      },
     ],
   ]
 
