@@ -56,7 +56,7 @@ const DEFAULT_SKILL_PROBE = path.join('skills', 'continuous-learning-v2');
 function resolveEccRoot(options = {}) {
   const envRoot = options.envRoot !== undefined
     ? options.envRoot
-    : (process.env.CLAUDE_PLUGIN_ROOT || '');
+    : (process.env.CLAUDE_PLUGIN_ROOT || process.env.ANTIGRAVITY_PLUGIN_ROOT || process.env.GEMINI_PLUGIN_ROOT || '');
 
   if (envRoot && envRoot.trim()) {
     return envRoot.trim();
@@ -88,6 +88,12 @@ function resolveEccRoot(options = {}) {
   // Standard install — files are copied directly into ~/.claude/
   if (isRoot(claudeDir)) {
     return claudeDir;
+  }
+
+  // Antigravity global plugin install — ~/.gemini/config/plugins/ecc
+  const antigravityPluginDir = path.join(homeDir, '.gemini', 'config', 'plugins', 'ecc');
+  if (isRoot(antigravityPluginDir)) {
+    return antigravityPluginDir;
   }
 
   // Exact legacy plugin install locations. These preserve backwards
