@@ -13,8 +13,8 @@ export { ECCHooksPlugin, ECCHooksPluginV2, ECCHooksPluginDefinition } from "./ec
 const INERT_PLUGIN = async () => ({})
 
 /**
- * Valid on both supported contracts: OpenCode 1.15+ reads `server`, OpenCode 2
- * reads `setup`. Neither registers a hook or touches the filesystem.
+ * Valid on both supported contracts: OpenCode 1.18.29+ reads `server`, OpenCode
+ * 2 reads `setup`. Neither registers a hook or touches the filesystem.
  */
 export default {
   id: "ecc.index",

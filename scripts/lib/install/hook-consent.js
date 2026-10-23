@@ -91,15 +91,21 @@ function getDisabledOpenCodePluginContent(sourceRelativePath = '.opencode/plugin
   // OpenCode discovers plugins independently of opencode.json registration.
   // Do not import the original module: even module initialization has effects.
   //
-  // The placeholder has to satisfy both supported contracts: OpenCode 1.15+
+  // The placeholder has to satisfy both supported contracts: OpenCode 1.18.29+
   // reads `server`, while OpenCode 2 reads `setup` and refuses a bare function
   // default export. OpenCode 2 also refuses duplicate plugin ids across the
-  // files it auto-discovers, so the id is derived from the file name instead of
-  // being shared by every disabled entrypoint.
-  const base = String(sourceRelativePath || 'index.ts').split(/[\\/]/).pop();
-  const stem = String(base || '')
+  // files it auto-discovers, so the id is derived from the entrypoint's path
+  // inside `plugins/`: two entrypoints can share a basename
+  // (`plugins/index.ts` and `plugins/custom/index.js`) while remaining distinct
+  // plugins, and a basename-derived id made the second one collide. Slicing at
+  // the last `plugins/` segment keeps the source path, the compiled `dist/`
+  // path and a destination path naming the same entrypoint on the same id.
+  const relative = normalizeOperationPath(sourceRelativePath);
+  const withinPlugins = (/(?:^|\/)plugins\/(.+)$/.exec(relative) || [null, relative])[1];
+  const stem = String(withinPlugins || '')
     .replace(/\.[^.]+$/, '')
-    .replace(/[^A-Za-z0-9_-]+/g, '-') || 'plugin';
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'plugin';
   return [
     'export default {',
     `  id: "ecc.disabled.${stem}",`,

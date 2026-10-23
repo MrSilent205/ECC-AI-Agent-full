@@ -40,8 +40,8 @@ try {
     const loaded = [];
     for (const name of fs.readdirSync(path.join(root, 'plugins')).filter(name => /\\.ts$/.test(name))) {
       const mod = await import(pathToFileURL(path.join(root, 'plugins', name)).href);
-      // Mirrors the OpenCode 1.15+ loader: the module default is either a bare
-      // plugin function or a definition carrying one as its server entry.
+      // Mirrors the OpenCode 1.18.29+ loader: the module default is either a
+      // bare plugin function or a definition carrying one as its server entry.
       // Later OpenCode versions read setup instead and are covered elsewhere.
       const definition = mod.default;
       if (typeof definition === 'function') loaded.push(await definition(context));

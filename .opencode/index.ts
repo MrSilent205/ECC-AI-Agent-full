@@ -35,8 +35,8 @@
  */
 
 // Export the dual-contract plugin definition as the package entry point.
-// OpenCode 1.15+ reads its `server` (v1 hooks) and OpenCode 2 reads its `setup`
-// (v2 hooks); see .opencode/plugins/ecc-hooks.ts. The module intentionally
-// exports nothing else: OpenCode 1.x loaders before 1.15 iterate every export
-// and require the default to be a bare plugin function.
+// OpenCode 1.18.29+ reads its `server` (v1 hooks) and OpenCode 2 reads its
+// `setup` (v2 hooks); see .opencode/plugins/ecc-hooks.ts. The module
+// intentionally exports nothing else: OpenCode 1.x loaders older than 1.18.29
+// iterate every export and require the default to be a bare plugin function.
 export { ECCHooksPluginDefinition as default } from "./plugins/ecc-hooks.ts"

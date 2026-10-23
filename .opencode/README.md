@@ -40,7 +40,11 @@ both contracts, so the same package works on either version.
 
 This loads the ECC OpenCode plugin module from npm:
 - hook/event integrations
-- bundled custom tools exported by the plugin
+
+The plugin registers no custom tools on either contract. On OpenCode 2 the tool
+surface comes from the `.opencode/tools/*.ts` files that OpenCode discovers
+itself, so a project that installs only the npm package does not get them; copy
+the tools or use one of the setup paths below for the full catalog.
 
 It does **not** auto-register the full ECC command/agent/instruction catalog in your project config. For the full OpenCode setup, either:
 - run OpenCode inside this repository, or
@@ -80,12 +84,14 @@ a pointer to this command if the build step is missing.
 The plugin ships a single definition, `{ id, server, setup }`, that both plugin
 loaders understand:
 
-- **OpenCode 1.15+** reads `server`, the `(input) => hooks` function whose result
-  is keyed by the event names in the hooks table below.
+- **OpenCode 1.18.29 and newer** reads `server`, the `(input) => hooks` function
+  whose result is keyed by the event names in the hooks table below. 1.18.29 is
+  the first 1.x release whose loader understands an object entrypoint.
 - **OpenCode 2.x** reads `setup(ctx)` and registers the same behavior on the
   context surfaces (`shell`, `tool`, `permission`, `session`, `event`).
-- **OpenCode < 1.15 is not supported.** Those loaders require a bare function as
-  the default export and reject the definition object.
+- **OpenCode older than 1.18.29 is not supported.** Those loaders iterate every
+  module export and require a bare function as the default, which the definition
+  object cannot also be.
 
 OpenCode loads every file under `.opencode/plugins/` independently and rejects
 duplicate plugin ids at activation, so each file exports its own `id`
@@ -271,5 +277,7 @@ remain available for module imports.
 
 Declining the hook capability during install replaces each disabled plugin file
 with an inert placeholder. The placeholder satisfies both contracts (an inert
-`server` and `setup`) and derives its id from the file name, because OpenCode 2
-rejects duplicate ids across the files it auto-discovers.
+`server` and `setup`) and derives its id from the entrypoint's path inside
+`plugins/`, because OpenCode 2 rejects duplicate ids across the files it
+auto-discovers and two entrypoints can share a basename (`plugins/index.ts` and
+`plugins/custom/index.ts`).
