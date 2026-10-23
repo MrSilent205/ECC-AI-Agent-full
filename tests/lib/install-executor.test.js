@@ -22,7 +22,7 @@ const {
 const { applyInstallPlan: applyInstallPlanDirect } = require('../../scripts/lib/install/apply');
 const { normalizeInstallRequest } = require('../../scripts/lib/install/request');
 const { createInstallPlanFromRequest } = require('../../scripts/lib/install/runtime');
-const { withHookConsent } = require('../../scripts/lib/install/hook-consent');
+const { withHookConsent, getDisabledOpenCodePluginContent } = require('../../scripts/lib/install/hook-consent');
 const { repairInstalledStates, uninstallInstalledStates } = require('../../scripts/lib/install-lifecycle');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -53,7 +53,7 @@ function operationFor(plan, suffix) {
   ));
 }
 
-const INERT_OPENCODE_PLUGIN = 'export default async () => ({});\n';
+const inertOpenCodePlugin = name => getDisabledOpenCodePluginContent(name);
 const OPENCODE_ENTRYPOINTS = ['ecc-hooks.ts', 'index.ts'];
 
 function snapshotFiles(root) {
@@ -1117,7 +1117,7 @@ function runTests() {
       }
       applyInstallPlanDirect(defaultPlan);
       for (const name of OPENCODE_ENTRYPOINTS) {
-        assert.strictEqual(fs.readFileSync(path.join(homeDir, '.config', 'opencode', 'plugins', name), 'utf8'), INERT_OPENCODE_PLUGIN);
+        assert.strictEqual(fs.readFileSync(path.join(homeDir, '.config', 'opencode', 'plugins', name), 'utf8'), inertOpenCodePlugin(name));
       }
       const installedConfig = JSON.parse(fs.readFileSync(
         path.join(homeDir, '.config', 'opencode', 'opencode.json'),
@@ -1182,7 +1182,7 @@ function runTests() {
       for (const name of OPENCODE_ENTRYPOINTS) {
         assert.strictEqual(
           fs.readFileSync(path.join(homeDir, '.config', 'opencode', 'plugins', name), 'utf8'),
-          name === 'index.ts' ? INERT_OPENCODE_PLUGIN : fs.readFileSync(path.join(REPO_ROOT, '.opencode', 'plugins', name), 'utf8')
+          name === 'index.ts' ? inertOpenCodePlugin(name) : fs.readFileSync(path.join(REPO_ROOT, '.opencode', 'plugins', name), 'utf8')
         );
       }
       assert.strictEqual(
@@ -1196,10 +1196,10 @@ function runTests() {
       assert.ok(!JSON.parse(fs.readFileSync(path.join(declinedPlan.targetRoot, 'opencode.json'), 'utf8')).plugin.includes('./plugins'));
       for (const name of OPENCODE_ENTRYPOINTS) {
         const destinationPath = path.join(homeDir, '.config', 'opencode', 'plugins', name);
-        assert.strictEqual(fs.readFileSync(destinationPath, 'utf8'), INERT_OPENCODE_PLUGIN);
+        assert.strictEqual(fs.readFileSync(destinationPath, 'utf8'), inertOpenCodePlugin(name));
         const operation = declinedState.operations.find(candidate => candidate.destinationPath === destinationPath);
         assert.strictEqual(operation.contentTransform, 'opencode-disable-plugin-entrypoint');
-        assert.strictEqual(operation.contentSha256, crypto.createHash('sha256').update(INERT_OPENCODE_PLUGIN).digest('hex'));
+        assert.strictEqual(operation.contentSha256, crypto.createHash('sha256').update(inertOpenCodePlugin(name)).digest('hex'));
       }
     } finally {
       cleanup(homeDir);

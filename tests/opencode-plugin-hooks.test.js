@@ -164,10 +164,100 @@ function readRecordedRuns(homeDir) {
     .map((line) => JSON.parse(line))
 }
 
+
+/**
+ * Build an OpenCode 2 plugin context whose hook surfaces record registrations
+ * and whose event stream can be driven from a test.
+ *
+ * @param {string} projectDir
+ * @returns {{
+ *   ctx: Record<string, unknown>,
+ *   registrations: Array<{surface: string, name: string, callback: Function}>,
+ *   hook: (surface: string, name: string) => Function,
+ *   push: (event: Record<string, unknown>) => void,
+ *   close: () => void,
+ * }}
+ */
+function createV2Harness(projectDir) {
+  const registrations = []
+  const register = (surface) => async (name, callback) => {
+    registrations.push({ surface, name, callback })
+    return { dispose() {} }
+  }
+
+  const pending = []
+  let wake = null
+  let closed = false
+  const notify = () => {
+    if (!wake) return
+    const resolve = wake
+    wake = null
+    resolve()
+  }
+
+  const stream = {
+    async *[Symbol.asyncIterator]() {
+      while (true) {
+        if (pending.length > 0) {
+          yield pending.shift()
+          continue
+        }
+        if (closed) return
+        await new Promise((resolve) => {
+          wake = resolve
+        })
+      }
+    },
+  }
+
+  const ctx = {
+    app: { version: "2.1.3" },
+    location: { directory: projectDir, project: { directory: projectDir } },
+    shell: { hook: register("shell") },
+    tool: { hook: register("tool") },
+    permission: { hook: register("permission") },
+    session: { hook: register("session") },
+    event: { subscribe: () => stream },
+  }
+
+  return {
+    ctx,
+    registrations,
+    hook(surface, name) {
+      const entry = registrations.find((item) => item.surface === surface && item.name === name)
+      assert.ok(entry, `expected a ${surface} hook registration named ${name}`)
+      return entry.callback
+    },
+    push(event) {
+      pending.push(event)
+      notify()
+    },
+    close() {
+      closed = true
+      notify()
+    },
+  }
+}
+
+/** Poll until `probe()` returns truthy, so event-consumer tests stay deterministic. */
+async function waitFor(probe, message) {
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline) {
+    if (await probe()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(message)
+}
+
 async function main() {
   console.log("\n=== Testing OpenCode plugin hooks ===\n")
 
-  const { ECCHooksPlugin } = await loadPlugin()
+  const pluginModule = await loadPlugin()
+  const {
+    ECCHooksPlugin,
+    ECCHooksPluginV2,
+    ECCHooksPluginDefinition,
+  } = pluginModule
   const tests = [
     [
       "plugin initializes and hooks stay usable when plugins/lib is missing",
@@ -691,6 +781,172 @@ async function main() {
           fs.rmSync(homeDir, { recursive: true, force: true })
         }
       },
+    ],
+    [
+      "v2: default export carries both plugin contracts",
+      async () => {
+        assert.strictEqual(pluginModule.default, ECCHooksPluginDefinition)
+        assert.strictEqual(pluginModule.default.id, "ecc.hooks")
+        assert.strictEqual(pluginModule.default.server, ECCHooksPlugin)
+        assert.strictEqual(pluginModule.default.setup, ECCHooksPluginV2)
+      },
+    ],
+    [
+      "v2: setup registers every supported hook surface",
+      async () => withTempProject([], async (projectDir) => {
+        const harness = createV2Harness(projectDir)
+        const cleanup = await ECCHooksPluginV2(harness.ctx)
+        assert.strictEqual(typeof cleanup, "function")
+
+        assert.deepStrictEqual(
+          harness.registrations.map((entry) => `${entry.surface}:${entry.name}`).sort(),
+          [
+            "permission:evaluate",
+            "session:compaction",
+            "shell:create.before",
+            "tool:execute.after",
+            "tool:execute.before",
+          ]
+        )
+
+        harness.close()
+        cleanup()
+      }),
+    ],
+    [
+      "v2: setup never rejects on a missing context or a failing surface",
+      async () => {
+        await ECCHooksPluginV2(undefined)
+        await ECCHooksPluginV2({})
+
+        const boom = () => {
+          throw new Error("surface unavailable")
+        }
+        await ECCHooksPluginV2({
+          shell: { hook: boom },
+          tool: { hook: boom },
+          permission: { hook: boom },
+          session: { hook: boom },
+          event: { subscribe: boom },
+        })
+      },
+    ],
+    [
+      "v2: shell create.before injects the ECC environment",
+      async () => withTempProject([], async (projectDir) => {
+        const harness = createV2Harness(projectDir)
+        await ECCHooksPluginV2(harness.ctx)
+
+        const event = { env: {} }
+        await harness.hook("shell", "create.before")(event)
+
+        assert.strictEqual(event.env.ECC_PLUGIN, "true")
+        assert.strictEqual(event.env.ECC_HOOK_PROFILE, "standard")
+        assert.strictEqual(event.env.PROJECT_ROOT, projectDir)
+        assert.equal(typeof event.env.ECC_VERSION, "string")
+        harness.close()
+      }),
+    ],
+    [
+      "v2: permissions relax ask decisions but never override deny",
+      async () => withTempProject([], async (projectDir) => {
+        const harness = createV2Harness(projectDir)
+        await ECCHooksPluginV2(harness.ctx)
+        const evaluate = harness.hook("permission", "evaluate")
+
+        const read = { action: "read", effect: "ask" }
+        await evaluate(read)
+        assert.strictEqual(read.effect, "allow")
+
+        const formatter = { action: "bash", resources: ["npx prettier --write src/a.ts"], effect: "ask" }
+        await evaluate(formatter)
+        assert.strictEqual(formatter.effect, "allow")
+
+        const unknown = { action: "bash", resources: ["curl https://example.com"], effect: "ask" }
+        await evaluate(unknown)
+        assert.strictEqual(unknown.effect, "ask", "unknown commands must keep asking the user")
+
+        const denied = { action: "read", effect: "deny" }
+        await evaluate(denied)
+        assert.strictEqual(denied.effect, "deny", "a deny decision must never be relaxed")
+
+        harness.close()
+      }),
+    ],
+    [
+      "v2: compaction appends ECC context without replacing the model summary",
+      async () => withTempProject([], async (projectDir) => {
+        const harness = createV2Harness(projectDir)
+        await ECCHooksPluginV2(harness.ctx)
+
+        const summary = { type: "text", text: "MODEL SUMMARY" }
+        const event = { system: [summary], result: "MODEL SUMMARY" }
+        await harness.hook("session", "compaction")(event)
+
+        assert.strictEqual(event.result, "MODEL SUMMARY", "result must stay untouched")
+        assert.strictEqual(event.system.length, 2)
+        assert.deepStrictEqual(event.system[0], summary)
+        assert.strictEqual(event.system[1].type, "text")
+        assert.match(event.system[1].text, /ECC Context/)
+        harness.close()
+      }),
+    ],
+    [
+      "v2: tool hooks feed the changed-files store and edited-file context",
+      async () => withTempProject([], async (projectDir) => {
+        const harness = createV2Harness(projectDir)
+        await ECCHooksPluginV2(harness.ctx)
+
+        await harness.hook("tool", "execute.before")({
+          tool: "write",
+          id: "call-1",
+          input: { path: "src/new-file.ts", content: "export const value = 1\n" },
+        })
+        await harness.hook("tool", "execute.after")({
+          tool: "write",
+          id: "call-1",
+          input: { path: "src/new-file.ts" },
+        })
+
+        const event = { system: [] }
+        await harness.hook("session", "compaction")(event)
+        assert.match(event.system[0].text, /Recently Edited Files/)
+        assert.match(event.system[0].text, /src\/new-file\.ts/)
+        harness.close()
+      }),
+    ],
+    [
+      "v2: the event stream tracks edits and clears state on session end",
+      async () => withTempProject([], async (projectDir) => {
+        const harness = createV2Harness(projectDir)
+        await ECCHooksPluginV2(harness.ctx)
+
+        const compactionText = async () => {
+          const event = { system: [] }
+          await harness.hook("session", "compaction")(event)
+          return event.system[0]?.text || ""
+        }
+
+        harness.push({ type: "file.edited", file: "notes.md" })
+        await waitFor(
+          async () => (await compactionText()).includes("notes.md"),
+          "file.edited must register the edited file"
+        )
+
+        harness.push({ type: "filesystem.changed", file: "src/watch.ts", event: "change" })
+        await waitFor(
+          async () => (await compactionText()).includes("src/watch.ts"),
+          "filesystem.changed must register changed source files"
+        )
+
+        harness.push({ type: "session.deleted" })
+        await waitFor(
+          async () => !(await compactionText()).includes("notes.md"),
+          "session.deleted must clear edited-file state"
+        )
+
+        harness.close()
+      }),
     ],
   ]
 

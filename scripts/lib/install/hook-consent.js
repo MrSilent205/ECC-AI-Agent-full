@@ -87,10 +87,27 @@ function isOpenCodePluginEntrypoint(operation = {}) {
   return getOpenCodeSourceActivationKind(operation) === 'plugin';
 }
 
-function getDisabledOpenCodePluginContent() {
+function getDisabledOpenCodePluginContent(sourceRelativePath = '.opencode/plugins/index.ts') {
   // OpenCode discovers plugins independently of opencode.json registration.
   // Do not import the original module: even module initialization has effects.
-  return 'export default async () => ({});\n';
+  //
+  // The placeholder has to satisfy both supported contracts: OpenCode 1.15+
+  // reads `server`, while OpenCode 2 reads `setup` and refuses a bare function
+  // default export. OpenCode 2 also refuses duplicate plugin ids across the
+  // files it auto-discovers, so the id is derived from the file name instead of
+  // being shared by every disabled entrypoint.
+  const base = String(sourceRelativePath || 'index.ts').split(/[\\/]/).pop();
+  const stem = String(base || '')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[^A-Za-z0-9_-]+/g, '-') || 'plugin';
+  return [
+    'export default {',
+    `  id: "ecc.disabled.${stem}",`,
+    '  server: async () => ({}),',
+    '  setup: () => {},',
+    '};',
+    '',
+  ].join('\n');
 }
 
 function isOpenCodeHookActivationOperation(operation = {}) {

@@ -34,14 +34,20 @@ function checkRuntime(runtimeRoot, extension, loader, installedHome = false) {
       const plugins = await load("plugins/index")
       const entry = await load("index")
       assert.deepEqual(Object.keys(entry), ["default"])
-      assert.equal(entry.default, plugins.default)
+      // The package entry is the dual-contract hooks definition; the barrel is
+      // an inert plugin with its own id so the hooks module is initialized
+      // exactly once, whichever contract loads it. A home install replaces the
+      // barrel with an inert placeholder that carries both contracts too.
+      assert.equal(entry.default.id, "ecc.hooks")
+      assert.equal(typeof entry.default.server, "function")
+      assert.equal(typeof entry.default.setup, "function")
+      assert.equal(plugins.default.id, installedHome === "true" ? "ecc.disabled.index" : "ecc.index")
+      assert.deepEqual(await plugins.default.server({}), {})
       const logs = []
-      // Home installs are auto-discovered. Their barrel must stay inert so
-      // the hooks module is initialized exactly once; published package entry
-      // imports continue to expose the actual plugin.
-      const active = installedHome === "true" ? await load("plugins/ecc-hooks") : entry
-      if (installedHome === "true") assert.deepEqual(await entry.default({}), {})
-      const plugin = await active.default({
+      // Home installs are auto-discovered, so the hooks come from the hooks
+      // entrypoint rather than the barrel.
+      const active = installedHome === "true" ? (await load("plugins/ecc-hooks")).default : entry.default
+      const plugin = await active.server({
         client: { app: { log: (event) => logs.push(event.body) } },
         $: () => { throw new Error("Unexpected shell execution") },
         directory: process.cwd(),
@@ -140,8 +146,18 @@ function main() {
             throw new Error("unexpected entry resolution: " + resolved)
           }
           const mod = await import("ecc-universal")
-          if (Object.keys(mod).join(",") !== "default" || typeof mod.default !== "function") {
-            throw new Error("root module must export exactly the plugin function")
+          if (Object.keys(mod).join(",") !== "default") {
+            throw new Error("root module must export exactly the default plugin definition")
+          }
+          const definition = mod.default
+          if (!definition || definition.id !== "ecc.hooks") {
+            throw new Error("root module must export the hooks plugin definition")
+          }
+          if (typeof definition.server !== "function") {
+            throw new Error("definition must expose the OpenCode 1 plugin function as server")
+          }
+          if (typeof definition.setup !== "function") {
+            throw new Error("definition must expose the OpenCode 2 setup function")
           }
         `
         const probePath = path.join(tempDir, "probe.mjs")
@@ -182,7 +198,7 @@ function main() {
       }
       assert.deepStrictEqual(unresolved, [])
     }],
-    ["built OpenCode entry exports only the plugin function", () => {
+    ["built OpenCode entry exports the dual-contract plugin definition", () => {
       const check = `
         const assert = require("assert")
         const { pathToFileURL } = require("url")
@@ -196,10 +212,13 @@ function main() {
             process.exit(1)
           }
           assert.deepStrictEqual(Object.keys(mod).sort(), ["default"])
-          assert.strictEqual(typeof mod.default, "function")
+          assert.strictEqual(typeof mod.default, "object")
+          assert.strictEqual(mod.default.id, "ecc.hooks")
+          assert.strictEqual(typeof mod.default.server, "function", "server must be the OpenCode 1 plugin function")
+          assert.strictEqual(typeof mod.default.setup, "function", "setup must be the OpenCode 2 entry point")
 
           let shellCalls = 0
-          const plugin = await mod.default({
+          const plugin = await mod.default.server({
             client: { app: { log: () => {} } },
             $: async () => {
               shellCalls += 1
