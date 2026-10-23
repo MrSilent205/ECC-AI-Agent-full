@@ -175,8 +175,11 @@ function runTests() {
 
     const barrel = moduleIds('.opencode/plugins/index.ts');
     const nested = moduleIds('.opencode/plugins/custom/index.js');
+    const flat = moduleIds('.opencode/plugins/custom-index.js');
     assert.strictEqual(barrel, 'ecc.disabled.index');
-    assert.strictEqual(nested, 'ecc.disabled.custom-index');
+    assert.strictEqual(nested, 'ecc.disabled.custom--index');
+    assert.strictEqual(flat, 'ecc.disabled.custom-index');
+    assert.notStrictEqual(nested, flat, 'plugins/custom/index.js and plugins/custom-index.js must not share an id');
     assert.notStrictEqual(barrel, nested, 'entrypoints sharing a basename must not share an id');
 
     // The compiled dist layout names the same entrypoints and must not collide
@@ -187,6 +190,7 @@ function runTests() {
     // apply.js can pass a destination path when the plan has no source path; it
     // names the same entrypoint and must therefore yield the same id.
     assert.strictEqual(moduleIds('/home/u/.config/opencode/plugins/index.ts'), barrel);
+    assert.strictEqual(moduleIds('/home/u/plugins/work/.config/opencode/plugins/index.ts'), barrel);
   })) passed++; else failed++;
 
   if (test('detects hook materialization from plan operations only', () => {

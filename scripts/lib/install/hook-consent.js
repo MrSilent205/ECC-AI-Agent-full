@@ -101,9 +101,16 @@ function getDisabledOpenCodePluginContent(sourceRelativePath = '.opencode/plugin
   // the last `plugins/` segment keeps the source path, the compiled `dist/`
   // path and a destination path naming the same entrypoint on the same id.
   const relative = normalizeOperationPath(sourceRelativePath);
-  const withinPlugins = (/(?:^|\/)plugins\/(.+)$/.exec(relative) || [null, relative])[1];
-  const stem = String(withinPlugins || '')
-    .replace(/\.[^.]+$/, '')
+  // Use the last `plugins/` segment so paths outside the repo tree cannot
+  // steal a shorter prefix and so `/home/u/plugins/work/.../plugins/index.ts`
+  // still maps to the same id as `.opencode/plugins/index.ts`.
+  const parts = relative.split('/plugins/');
+  const withinPlugins = parts.length > 1 ? parts[parts.length - 1] : relative;
+  const withoutExt = String(withinPlugins || '').replace(/\.[^.]+$/, '');
+  // Use `--` for path separators so `custom/index` and `custom-index` stay distinct.
+  const stem = withoutExt
+    .replace(/\\/g, '--')
+    .replace(/\//g, '--')
     .replace(/[^A-Za-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '') || 'plugin';
   return [

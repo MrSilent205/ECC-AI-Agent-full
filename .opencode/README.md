@@ -41,10 +41,12 @@ both contracts, so the same package works on either version.
 This loads the ECC OpenCode plugin module from npm:
 - hook/event integrations
 
-The plugin registers no custom tools on either contract. On OpenCode 2 the tool
-surface comes from the `.opencode/tools/*.ts` files that OpenCode discovers
-itself, so a project that installs only the npm package does not get them; copy
-the tools or use one of the setup paths below for the full catalog.
+On OpenCode 1.18.29+ the plugin registers two tools (`changed-files` and
+`dependency-analyzer`). On OpenCode 2 the plugin registers no custom tools. The
+tool surface comes from the `.opencode/tools/*.ts` files that OpenCode discovers
+itself, so a project that installs only the npm package does not get them on
+OpenCode 2; copy the tools or use one of the setup paths below for the full
+catalog.
 
 It does **not** auto-register the full ECC command/agent/instruction catalog in your project config. For the full OpenCode setup, either:
 - run OpenCode inside this repository, or

@@ -185,6 +185,7 @@ const V2_CONSOLE_METHOD: Record<LogLevel, "warn" | "error"> = {
  * break a hook.
  */
 export const logV2: DiagnosticLog = (level, message) => {
+  if (level === "debug" && process.env.ECC_DEBUG !== "1") return
   try {
     console[V2_CONSOLE_METHOD[level]](`[ecc:${level}] ${message}`)
   } catch {

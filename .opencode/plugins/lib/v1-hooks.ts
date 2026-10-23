@@ -289,10 +289,12 @@ async function onToolExecuteAfter(input: ToolInput, output: unknown, state: V1St
 
   await runTypecheck(input, state)
 
+  const argsAfter = input.args as { command?: unknown } | undefined
+  const commandAfter = typeof argsAfter?.command === "string" ? argsAfter.command : ""
   if (
     state.hookEnabled("post:bash:pr-created", ["standard", "strict"]) &&
     input.tool === "bash" &&
-    input.args?.toString().includes("gh pr create")
+    commandAfter.includes("gh pr create")
   ) {
     void state.log("info", "[ECC] PR created - check GitHub Actions status")
   }
@@ -327,10 +329,12 @@ async function onToolExecuteBefore(input: ToolInput, state: V1State): Promise<vo
   trackPendingWrite(input, state)
 
   // Git push review reminder
+  const argsBefore = input.args as { command?: unknown } | undefined
+  const commandBefore = typeof argsBefore?.command === "string" ? argsBefore.command : ""
   if (
     state.hookEnabled("pre:bash:git-push-reminder", "strict") &&
     input.tool === "bash" &&
-    input.args?.toString().includes("git push")
+    commandBefore.includes("git push")
   ) {
     void state.log("info", "[ECC] Remember to review changes before pushing: git diff origin/main...HEAD")
   }
