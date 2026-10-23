@@ -1,16 +1,16 @@
 {
   "coverage": {
-    "skills": 311,
-    "withTriggers": 33
+    "skills": 312,
+    "withTriggers": 34
   },
-  "generatedAt": "2026-09-24T23:51:22.784Z",
+  "generatedAt": "2026-10-16T14:28:25.401Z",
   "id": "skill-triggers@1",
   "model": {
     "effort": null,
     "id": "hand-seeded",
     "source": "manual-curation-pending-regeneration"
   },
-  "registryDigest": "498caee2738006d64530e9be34883111cf67742d8c4389f39d61299e1a1c4400",
+  "registryDigest": "a4ae6982fb1e6d9ba7aa6cb5a89edc1982a01b77f03f4797230917f5e6fafdd9",
   "schemaVersion": 1,
   "triggers": {
     "skill:agent-runtime-gateway-smoke-test": [
@@ -135,6 +135,12 @@
       "docker compose setup",
       "container security",
       "multi service orchestration"
+    ],
+    "skill:ecc-contribution-review": [
+      "prepare ecc skill contribution for review",
+      "organize skill contribution security evidence",
+      "review cross-harness skill contribution observations",
+      "compile ecc skill contribution proposal"
     ],
     "skill:error-handling": [
       "error types",
@@ -291,5 +297,5 @@
       "before creating a pr"
     ]
   },
-  "triggersDigest": "054898acb769893c46e5bd7037141f7be83fb775515ea1dbb52fb1c18aca19e6"
+  "triggersDigest": "47baf9408ee9f662289036228151a1aebcee296dd14ab12bad41168d1ccdce87"
 }
