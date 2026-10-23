@@ -19,6 +19,13 @@ from scripts.spec_generator import generate_spec
 logger = logging.getLogger(__name__)
 
 
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value}")
+    return number
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -54,13 +61,13 @@ def main() -> None:
 
     parser.add_argument(
         "--max-turns",
-        type=int,
+        type=_positive_int,
         default=30,
         help="Turn cap per scenario; long multi-step workflows need more (default: 30)",
     )
     parser.add_argument(
         "--timeout",
-        type=int,
+        type=_positive_int,
         default=900,
         help="Seconds per scenario before the partial trace is graded (default: 900)",
     )
@@ -124,6 +131,12 @@ def main() -> None:
             timeout=args.timeout,
             fixtures_dir=args.fixtures,
         )
+        if run.timed_out:
+            logger.warning(
+                "       %s hit the %ds timeout; its partial trace is graded, "
+                "so compliance may be understated.",
+                scenario.level_name, args.timeout,
+            )
         result = grade(spec, list(run.observations))
         graded_results.append((scenario.level_name, result, list(run.observations)))
         logger.info("       %s: %.0f%%", scenario.level_name, result.compliance_rate * 100)

@@ -56,7 +56,9 @@ Rules:
       ".claude/plans/example.plan.md": |
         # Plan
         - [ ] step 1
-  The sandbox is a git repo with these files committed as the baseline.
+  Paths must be relative, stay inside the sandbox, and not start with `.git/`.
+  Every value must be a string. The sandbox is a git repo with these files
+  committed as the baseline.
 - Prompts should be realistic — something a developer would actually ask
 
 Skill content:

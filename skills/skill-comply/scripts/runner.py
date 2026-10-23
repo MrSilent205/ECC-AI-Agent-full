@@ -34,6 +34,7 @@ class ScenarioRun:
     scenario: Scenario
     observations: tuple[ObservationEvent, ...]
     sandbox_dir: Path
+    timed_out: bool = False
 
 
 def run_scenario(
@@ -49,7 +50,7 @@ def run_scenario(
 
     sandbox_dir = _safe_sandbox_dir(scenario.id)
     _setup_sandbox(sandbox_dir, scenario, fixtures_dir=fixtures_dir)
-    gh_bin = _install_gh_stub(SANDBOX_BASE)
+    gh_bin = _install_gh_stub(sandbox_dir)
     env = {**os.environ, "PATH": f"{gh_bin}{os.pathsep}{os.environ.get('PATH', '')}"}
 
     try:
@@ -79,6 +80,7 @@ def run_scenario(
             scenario=scenario,
             observations=tuple(_parse_stream_json(partial)),
             sandbox_dir=sandbox_dir,
+            timed_out=True,
         )
 
     # claude -p returns rc=1 when --max-turns is reached, but the stream-json
@@ -157,7 +159,15 @@ def _setup_sandbox(
     subprocess.run(["git", "init"], cwd=sandbox_dir, capture_output=True)
 
     if fixtures_dir is not None:
-        shutil.copytree(fixtures_dir, sandbox_dir, dirs_exist_ok=True)
+        # Keep links as links (never copy what they point at) and leave any
+        # .git in the fixtures out, so it cannot replace the sandbox repo.
+        shutil.copytree(
+            fixtures_dir,
+            sandbox_dir,
+            dirs_exist_ok=True,
+            symlinks=True,
+            ignore=shutil.ignore_patterns(".git"),
+        )
     _write_scenario_files(sandbox_dir, getattr(scenario, "files", ()))
 
     for cmd in scenario.setup_commands:
@@ -184,17 +194,23 @@ GH_STUB = """#!/bin/sh
 case "$1 $2" in
   "pr create") echo "https://github.com/skill-comply/sandbox/pull/1" ;;
   "pr view"|"pr list"|"repo view") echo "{}" ;;
+  *) echo "skill-comply gh stub: unsupported command: gh $*" >&2; exit 1 ;;
 esac
 exit 0
 """
 
 
-def _install_gh_stub(base: Path) -> Path:
-    """Write a fake ``gh`` under ``base/_bin`` and return that directory."""
-    bin_dir = base / "_bin"
+def _install_gh_stub(sandbox_dir: Path) -> Path:
+    """Write a fake ``gh`` in a per-scenario dir beside the sandbox.
+
+    One dir per scenario keeps parallel or repeated runs from rewriting a
+    ``gh`` another run is executing. It sits outside the sandbox repo, so the
+    baseline commit never includes it.
+    """
+    bin_dir = sandbox_dir.parent / f"{sandbox_dir.name}.bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     gh = bin_dir / "gh"
-    gh.write_text(GH_STUB)
+    gh.write_text(GH_STUB, encoding="utf-8")
     gh.chmod(0o755)
     return bin_dir
 
@@ -208,19 +224,27 @@ def _add_local_origin(sandbox_dir: Path) -> None:
     origin = sandbox_dir.parent / f"{sandbox_dir.name}.origin.git"
     if origin.exists():
         shutil.rmtree(origin)
-    subprocess.run(["git", "init", "--bare", str(origin)], capture_output=True)
-    subprocess.run(
-        ["git", "remote", "add", "origin", str(origin)],
-        cwd=sandbox_dir, capture_output=True,
-    )
-    subprocess.run(
-        ["git", "push", "-u", "origin", "HEAD"], cwd=sandbox_dir, capture_output=True
-    )
+    # A setup command may have switched branches; the origin must default to
+    # the branch that gets pushed, or origin/HEAD cannot be resolved.
+    branch = (_git(sandbox_dir, "symbolic-ref", "--short", "HEAD").stdout or "").strip()
+    _git(sandbox_dir, "init", "--bare", f"--initial-branch={branch}", str(origin))
+    _git(sandbox_dir, "remote", "add", "origin", str(origin))
+    _git(sandbox_dir, "push", "-u", "origin", branch)
     # Scripts that find the default branch read refs/remotes/origin/HEAD.
-    subprocess.run(
-        ["git", "remote", "set-head", "origin", "-a"],
-        cwd=sandbox_dir, capture_output=True,
+    _git(sandbox_dir, "remote", "set-head", "origin", branch)
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    """Run git in the sandbox; a failure raises instead of leaving a half-built repo."""
+    result = subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True
     )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"sandbox setup: git {' '.join(args)} failed "
+            f"(rc={result.returncode}): {result.stderr.strip()[:300]}"
+        )
+    return result
 
 
 def _write_scenario_files(
@@ -233,19 +257,25 @@ def _write_scenario_files(
         target.relative_to(root)  # ValueError on traversal or absolute path
         if target == root:
             raise ValueError(f"Scenario file path must name a file: {rel!r}")
+        if target.relative_to(root).parts[0] == ".git":
+            # Files under .git (hooks, config) run on the next git command.
+            raise ValueError(f"Scenario file path must not be inside .git: {rel!r}")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target.write_text(content, encoding="utf-8")
 
 
 def _commit_initial_state(sandbox_dir: Path) -> None:
     """Commit the starting files so the agent sees a clean tree and a HEAD."""
-    identity = ["-c", "user.name=skill-comply", "-c", "user.email=skill-comply@localhost"]
-    subprocess.run(["git", "add", "-A"], cwd=sandbox_dir, capture_output=True)
-    subprocess.run(
-        ["git", *identity, "commit", "--allow-empty", "-m", "chore: sandbox baseline"],
-        cwd=sandbox_dir,
-        capture_output=True,
-    )
+    # Global signing or hook config on the operator's machine must not break
+    # the baseline commit.
+    identity = [
+        "-c", "user.name=skill-comply",
+        "-c", "user.email=skill-comply@localhost",
+        "-c", "commit.gpgsign=false",
+        "-c", "core.hooksPath=/dev/null",
+    ]
+    _git(sandbox_dir, "add", "-A")
+    _git(sandbox_dir, *identity, "commit", "--allow-empty", "-m", "chore: sandbox baseline")
 
 
 def _redact_home_path(text: str) -> str:

@@ -40,7 +40,23 @@ uv run python -m scripts.run --dry-run ~/.claude/skills/search-first/SKILL.md
 
 # Custom models
 uv run python -m scripts.run --gen-model haiku --model sonnet <path>
+
+# Long multi-step workflows: raise the per-scenario turn cap and timeout
+uv run python -m scripts.run --max-turns 120 --timeout 2400 <path>
+
+# Copy a directory (plans, config, sources) into every scenario sandbox
+uv run python -m scripts.run --fixtures ./fixtures <path>
 ```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--max-turns N` | 30 | Turn cap per scenario |
+| `--timeout S` | 900 | Seconds per scenario; on timeout the partial trace is still graded and a warning is logged |
+| `--fixtures DIR` | none | Copied into each sandbox (symlinks kept as links, `.git` skipped) |
+
+### Sandbox
+
+Each scenario runs in `/tmp/skill-comply-sandbox/<id>/`. It holds the files the scenario lists under `files:` plus any `--fixtures`, committed as a baseline. It has a local bare `origin` with `origin/HEAD` set, so push and merge steps work offline. A stub `gh` is first on `PATH`: it fakes `pr create`, `pr view`, `pr list` and `repo view` and fails on any other subcommand. Results for steps that open or merge PRs are therefore simulated.
 
 ## Key Concept: Prompt Independence
 
