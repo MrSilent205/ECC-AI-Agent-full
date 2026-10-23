@@ -107,10 +107,16 @@ function getDisabledOpenCodePluginContent(sourceRelativePath = '.opencode/plugin
   const parts = relative.split('/plugins/');
   const withinPlugins = parts.length > 1 ? parts[parts.length - 1] : relative;
   const withoutExt = String(withinPlugins || '').replace(/\.[^.]+$/, '');
-  // Use `--` for path separators so `custom/index` and `custom-index` stay distinct.
+  // Path segments are joined with `_`, so a separator in
+  // `plugins/custom/index.js` must not collide with a literal separator in a
+  // filename such as `plugins/custom-index.js` or `plugins/custom--index.js`:
+  // every existing `_` in a segment is doubled first, which keeps
+  // `custom/index`, `custom_index`, `custom-index` and `custom--index` apart
+  // while leaving `plugins/index.ts` and `plugins/custom/index.js` distinct.
   const stem = withoutExt
-    .replace(/\\/g, '--')
-    .replace(/\//g, '--')
+    .replace(/_/g, '__')
+    .replace(/\\/g, '_')
+    .replace(/\//g, '_')
     .replace(/[^A-Za-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '') || 'plugin';
   return [

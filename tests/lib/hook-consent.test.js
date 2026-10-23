@@ -176,10 +176,16 @@ function runTests() {
     const barrel = moduleIds('.opencode/plugins/index.ts');
     const nested = moduleIds('.opencode/plugins/custom/index.js');
     const flat = moduleIds('.opencode/plugins/custom-index.js');
+    const doubleFlat = moduleIds('.opencode/plugins/custom--index.js');
+    const underscoreFlat = moduleIds('.opencode/plugins/custom_index.js');
     assert.strictEqual(barrel, 'ecc.disabled.index');
-    assert.strictEqual(nested, 'ecc.disabled.custom--index');
+    assert.strictEqual(nested, 'ecc.disabled.custom_index');
     assert.strictEqual(flat, 'ecc.disabled.custom-index');
+    assert.strictEqual(doubleFlat, 'ecc.disabled.custom--index');
+    assert.strictEqual(underscoreFlat, 'ecc.disabled.custom__index');
     assert.notStrictEqual(nested, flat, 'plugins/custom/index.js and plugins/custom-index.js must not share an id');
+    assert.notStrictEqual(nested, doubleFlat, 'plugins/custom/index.js and plugins/custom--index.js must not share an id');
+    assert.notStrictEqual(flat, doubleFlat, 'a literal double hyphen in a filename must not collide with a path separator');
     assert.notStrictEqual(barrel, nested, 'entrypoints sharing a basename must not share an id');
 
     // The compiled dist layout names the same entrypoints and must not collide
