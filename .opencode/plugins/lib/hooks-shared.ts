@@ -279,12 +279,14 @@ function commandInvocation(
   if (command === "powershell") return { file: "powershell.exe", args }
   return {
     file: process.env.ComSpec || "cmd.exe",
-    // /d: skip the autorun registry key. /e:off: disable command extensions,
-    // which is what expands %VAR% inside quoted strings — without it a path
-    // like "src/%USERNAME%.ts" is rewritten to "src/Administrator.ts" before
-    // the formatter ever sees it. /s: keep the trailing quote as the command
-    // terminator so the whole line is one quoted argument.
-    args: ["/d", "/e:off", "/s", "/c", `"${windowsCommandLine(command, args)}"`],
+    // /d: skip the autorun registry key. /e:off: disable command extensions
+    // (which include %VAR% expansion in quoted strings). /v:off: explicitly
+    // disable *normal* %VAR% expansion too, so a path like
+    // "src/%USERNAME%.ts" stays literal and is never rewritten to
+    // "src/Administrator.ts" before prettier or tsc sees it. /s: keep the
+    // trailing quote as the command terminator so the whole line is one
+    // quoted argument.
+    args: ["/d", "/e:off", "/v:off", "/s", "/c", `"${windowsCommandLine(command, args)}"`],
     windowsVerbatimArguments: true,
   }
 }

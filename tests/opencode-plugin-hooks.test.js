@@ -1046,6 +1046,33 @@ async function main() {
         harness.close()
       }),
     ],
+    [
+      "runCommand disables Windows %VAR% expansion so literal % in paths stays safe",
+      async () => {
+        // Read the compiled hooks-shared.js and verify the cmd.exe invocation
+        // disables both command extensions (/e:off) and normal %VAR% expansion
+        // (/v:off). Both flags are required: /e:off removes command extensions
+        // (which include % expansion), and /v:off explicitly removes normal
+        // %VAR% expansion even when it leaks through command extensions off.
+        // A path like "src/%USERNAME%.ts" must not be rewritten to
+        // "src/Administrator.ts" before prettier/tsc sees it.
+        const hooksSharedPath = path.join(
+          __dirname,
+          "..",
+          ".opencode",
+          "dist",
+          "plugins",
+          "lib",
+          "hooks-shared.js"
+        )
+        const source = fs.readFileSync(hooksSharedPath, "utf-8")
+        assert.ok(
+          source.includes('"/d", "/e:off", "/v:off", "/s", "/c"'),
+          "cmd.exe must be invoked with /d /e:off /v:off /s /c to prevent " +
+            "%VAR% expansion in paths on Windows"
+        )
+      },
+    ],
   ]
 
   let passed = 0
