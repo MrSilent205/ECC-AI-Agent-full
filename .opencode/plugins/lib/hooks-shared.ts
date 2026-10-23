@@ -249,15 +249,18 @@ export interface CommandResult {
  * Quote one Windows command-line token for `cmd.exe`.
  *
  * Values without spaces or cmd metacharacters pass through unchanged; anything
- * else is wrapped in double quotes with embedded quotes doubled, which keeps
- * separators and redirections literal.
+ * else is wrapped in double quotes with embedded quotes doubled.  Any `%` in
+ * the value is doubled (`%` -> `%%`) so that cmd.exe's percent-variable
+ * expansion does not rewrite a literal `%` in a file path such as
+ * `src/%USERNAME%.ts` to `src/Administrator.ts`.
  */
 function quoteWindowsToken(value: string): string {
   if (!/[\s"&|<>^%]/.test(value)) return value
-  return `"${value.replace(/"/g, '""')}"`
+  const escaped = value.replace(/%/g, "%%").replace(/"/g, '""')
+  return `"${escaped}"`
 }
 
-function windowsCommandLine(command: string, args: string[]): string {
+export function windowsCommandLine(command: string, args: string[]): string {
   return [command, ...args].map(quoteWindowsToken).join(" ")
 }
 
@@ -270,7 +273,7 @@ function windowsCommandLine(command: string, args: string[]): string {
  * (`powershell.exe`) are spawned as-is. On POSIX the command is spawned
  * directly, with no shell in the path.
  */
-function commandInvocation(
+export function commandInvocation(
   command: string,
   args: string[]
 ): { file: string; args: string[]; windowsVerbatimArguments?: boolean } {
@@ -279,14 +282,11 @@ function commandInvocation(
   if (command === "powershell") return { file: "powershell.exe", args }
   return {
     file: process.env.ComSpec || "cmd.exe",
-    // /d: skip the autorun registry key. /e:off: disable command extensions
-    // (which include %VAR% expansion in quoted strings). /v:off: explicitly
-    // disable *normal* %VAR% expansion too, so a path like
-    // "src/%USERNAME%.ts" stays literal and is never rewritten to
-    // "src/Administrator.ts" before prettier or tsc sees it. /s: keep the
-    // trailing quote as the command terminator so the whole line is one
-    // quoted argument.
-    args: ["/d", "/e:off", "/v:off", "/s", "/c", `"${windowsCommandLine(command, args)}"`],
+    // /d: skip the autorun registry key. /s: keep the trailing quote as the
+    // command terminator so the whole line is one quoted argument.  Literal %
+    // characters in file paths are escaped to %% by quoteWindowsToken(), which
+    // prevents cmd.exe from expanding them as environment-variable references.
+    args: ["/d", "/s", "/c", `"${windowsCommandLine(command, args)}"`],
     windowsVerbatimArguments: true,
   }
 }

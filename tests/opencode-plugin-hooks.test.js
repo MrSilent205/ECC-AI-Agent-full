@@ -1047,30 +1047,79 @@ async function main() {
       }),
     ],
     [
-      "runCommand disables Windows %VAR% expansion so literal % in paths stays safe",
+      "runCommand escapes literal % in Windows command lines so %VAR% stays literal",
       async () => {
-        // Read the compiled hooks-shared.js and verify the cmd.exe invocation
-        // disables both command extensions (/e:off) and normal %VAR% expansion
-        // (/v:off). Both flags are required: /e:off removes command extensions
-        // (which include % expansion), and /v:off explicitly removes normal
-        // %VAR% expansion even when it leaks through command extensions off.
-        // A path like "src/%USERNAME%.ts" must not be rewritten to
-        // "src/Administrator.ts" before prettier/tsc sees it.
-        const hooksSharedPath = path.join(
-          __dirname,
-          "..",
-          ".opencode",
-          "dist",
-          "plugins",
-          "lib",
-          "hooks-shared.js"
+        // On Windows, cmd.exe expands %VAR% even inside double-quoted
+        // arguments, so a path like src/%USERNAME%.ts would be rewritten to
+        // src/Administrator.ts before the formatter or tsc ever sees it.
+        // Neither /e:off nor /v:off stops that; the only reliable fix is to
+        // double every % in the command line.  Test the escaping helper
+        // directly, since commandInvocation() only takes the cmd.exe path on
+        // win32 and this suite runs on Linux.
+        const hooksShared = await import(
+          pathToFileURL(
+            path.join(__dirname, "..", ".opencode", "dist", "plugins", "lib", "hooks-shared.js")
+          ).href
         )
-        const source = fs.readFileSync(hooksSharedPath, "utf-8")
+
+        const line = hooksShared.windowsCommandLine("npx", [
+          "prettier",
+          "--write",
+          "src/%USERNAME%.ts",
+        ])
         assert.ok(
-          source.includes('"/d", "/e:off", "/v:off", "/s", "/c"'),
-          "cmd.exe must be invoked with /d /e:off /v:off /s /c to prevent " +
-            "%VAR% expansion in paths on Windows"
+          line.includes("src/%%USERNAME%%.ts"),
+          `expected literal % to be doubled in the command line: ${line}`
         )
+
+        // A token with no % must be left alone.
+        assert.strictEqual(
+          hooksShared.windowsCommandLine("npx", ["prettier", "--write", "src/index.ts"]),
+          'npx prettier --write src/index.ts'
+        )
+
+        // Quoting and % escaping must compose: a quoted path with a % keeps
+        // its quotes and its doubled percents.
+        const quoted = hooksShared.windowsCommandLine("npx", [
+          "prettier",
+          "--write",
+          "src/my %file%.ts",
+        ])
+        assert.ok(
+          quoted.includes('"src/my %%file%%.ts"'),
+          `expected a quoted, percent-escaped token: ${quoted}`
+        )
+      },
+    ],
+    [
+      "runCommand keeps cmd.exe extensions enabled on Windows",
+      async () => {
+        // /e:off breaks npm .cmd shims (they need FOR /F and batch parameter
+        // modifiers), and /v:off does not stop ordinary %VAR% expansion
+        // anyway.  Neither flag must be passed; % is escaped by doubling it.
+        const hooksShared = await import(
+          pathToFileURL(
+            path.join(__dirname, "..", ".opencode", "dist", "plugins", "lib", "hooks-shared.js")
+          ).href
+        )
+
+        const previousPlatform = process.platform
+        Object.defineProperty(process, "platform", { value: "win32", configurable: true })
+        try {
+          const invocation = hooksShared.commandInvocation("npx", ["prettier", "--write", "src/%f%.ts"])
+          assert.strictEqual(invocation.file, "cmd.exe")
+          assert.strictEqual(invocation.windowsVerbatimArguments, true)
+          assert.ok(
+            invocation.args.every((arg) => !/\/e:off|\/v:off/.test(arg)),
+            `must not pass /e:off or /v:off: ${invocation.args.join(" ")}`
+          )
+          assert.ok(
+            invocation.args.some((arg) => arg.includes("src/%%f%%.ts")),
+            `expected %%-escaped percents in: ${invocation.args.join(" ")}`
+          )
+        } finally {
+          Object.defineProperty(process, "platform", { value: previousPlatform, configurable: true })
+        }
       },
     ],
   ]
