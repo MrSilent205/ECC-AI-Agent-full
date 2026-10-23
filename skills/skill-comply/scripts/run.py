@@ -19,6 +19,13 @@ from scripts.spec_generator import generate_spec
 logger = logging.getLogger(__name__)
 
 
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value}")
+    return number
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -52,7 +59,30 @@ def main() -> None:
         help="Output report path (default: results/<skill-name>.md)",
     )
 
+    parser.add_argument(
+        "--max-turns",
+        type=_positive_int,
+        default=30,
+        help="Turn cap per scenario; long multi-step workflows need more (default: 30)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=_positive_int,
+        default=900,
+        help="Seconds per scenario before the partial trace is graded (default: 900)",
+    )
+    parser.add_argument(
+        "--fixtures",
+        type=Path,
+        default=None,
+        help="Directory copied into every scenario sandbox (plans, config, sources)",
+    )
+
     args = parser.parse_args()
+
+    if args.fixtures is not None and not args.fixtures.is_dir():
+        logger.error("Error: Fixtures directory not found: %s", args.fixtures)
+        sys.exit(1)
 
     if not args.skill.is_file():
         logger.error("Error: Skill file not found: %s", args.skill)
@@ -94,7 +124,19 @@ def main() -> None:
 
     for scenario in scenarios:
         logger.info("       Running %s...", scenario.level_name)
-        run = run_scenario(scenario, model=args.model)
+        run = run_scenario(
+            scenario,
+            model=args.model,
+            max_turns=args.max_turns,
+            timeout=args.timeout,
+            fixtures_dir=args.fixtures,
+        )
+        if run.timed_out:
+            logger.warning(
+                "       %s hit the %ds timeout; its partial trace is graded, "
+                "so compliance may be understated.",
+                scenario.level_name, args.timeout,
+            )
         result = grade(spec, list(run.observations))
         graded_results.append((scenario.level_name, result, list(run.observations)))
         logger.info("       %s: %.0f%%", scenario.level_name, result.compliance_rate * 100)
