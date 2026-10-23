@@ -574,21 +574,23 @@
   },
   "overrides": {
     "fast-uri": "3.1.8",
-    "markdown-it": "14.3.1",
+    "markdown-it": "14.3.3",
     "js-yaml": "4.3.2",
     "@humanfs/node": "0.16.8",
     "brace-expansion": "5.0.12",
     "katex": "0.18.2",
-    "smol-toml": "1.9.1"
+    "smol-toml": "1.9.1",
+    "toml": "5.0.1"
   },
   "resolutions": {
     "fast-uri": "3.1.8",
-    "markdown-it": "14.3.1",
+    "markdown-it": "14.3.3",
     "js-yaml": "4.3.2",
     "@humanfs/node": "0.16.8",
     "brace-expansion": "5.0.12",
     "katex": "0.18.2",
-    "smol-toml": "1.9.1"
+    "smol-toml": "1.9.1",
+    "toml": "5.0.1"
   },
   "packageManager": "yarn@4.9.2+sha512.1fc009bc09d13cfd0e19efa44cbfc2b9cf6ca61482725eb35bbc5e257e093ebf4130db6dfe15d604ff4b79efd8e1e8e99b25fa7d0a6197c9f9826358d4d65c3c"
 }
