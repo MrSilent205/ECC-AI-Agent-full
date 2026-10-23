@@ -54,7 +54,9 @@ function main() {
       assert.strictEqual(result.status, 0, result.error?.message || result.stderr)
 
       const packOutput = JSON.parse(result.stdout)
-      const packagedPaths = new Set(packOutput[0]?.files?.map((file) => file.path) ?? [])
+      const packagedPaths = new Set(
+        (Array.isArray(packOutput) ? packOutput[0] : Object.values(packOutput)[0])?.files?.map((file) => file.path) ?? []
+      )
 
       assert.ok(
         packagedPaths.has(".opencode/dist/index.js"),

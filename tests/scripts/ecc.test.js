@@ -77,7 +77,10 @@ function main() {
       assert.match(result.stdout, /security-ioc-scan/);
     }],
     ['delegates explicit install command', () => {
-      const result = runCli(['install', '--dry-run', '--json', 'typescript']);
+      const homeDir = createTempDir('ecc-cli-home-');
+      const result = runCli(['install', '--dry-run', '--json', 'typescript'], {
+        env: { HOME: homeDir },
+      });
       assert.strictEqual(result.status, 0, result.stderr);
       const payload = parseJson(result.stdout);
       assert.strictEqual(payload.dryRun, true);
@@ -86,7 +89,10 @@ function main() {
       assert.ok(payload.plan.selectedModuleIds.includes('framework-language'));
     }],
     ['routes implicit top-level args to install', () => {
-      const result = runCli(['--dry-run', '--json', 'typescript']);
+      const homeDir = createTempDir('ecc-cli-home-');
+      const result = runCli(['--dry-run', '--json', 'typescript'], {
+        env: { HOME: homeDir },
+      });
       assert.strictEqual(result.status, 0, result.stderr);
       const payload = parseJson(result.stdout);
       assert.strictEqual(payload.dryRun, true);

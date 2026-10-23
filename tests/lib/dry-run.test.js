@@ -260,12 +260,16 @@ function runTests() {
   })) passed++; else failed++;
 
   if (test('--dry-run works with implicit install routing', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecc-dry-run-home-'));
     const eccJs = path.resolve(__dirname, '..', '..', 'scripts', 'ecc.js');
     const result = spawnSync(process.execPath, [eccJs, '--dry-run', '--json', 'typescript'], {
       encoding: 'utf8',
-      env: { ...process.env },
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir },
     });
-    assert.strictEqual(result.status, 0, `Expected exit 0, got ${result.status}: ${result.stderr}`);
+    assert.strictEqual(result.status, 0, `Expected exit 0, got ${result.status}: ${result.stderr || result.error?.message}`);
     const payload = JSON.parse(result.stdout);
     assert.strictEqual(payload.dryRun, true, 'Expected dryRun=true in JSON output');
     assert.deepStrictEqual(payload.plan.legacyLanguages, ['typescript']);

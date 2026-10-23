@@ -176,54 +176,35 @@ function readRegularTextFile(filePath, options = {}) {
 
 function writeCreateOnlyTextFile(filePath, content, trustedRoot) {
   assertWithinTrustedRoot(filePath, trustedRoot, 'write memory');
-  const temporaryPath = path.join(
-    path.dirname(filePath),
-    `.ecc-memory-${process.pid}-${crypto.randomUUID()}.tmp`
-  );
   const flags = fs.constants.O_WRONLY
     | fs.constants.O_CREAT
     | fs.constants.O_EXCL
     | (fs.constants.O_NOFOLLOW || 0);
   let descriptor;
-  let operationError;
-  let cleanupError;
   try {
-    descriptor = fs.openSync(temporaryPath, flags, 0o600);
+    descriptor = fs.openSync(filePath, flags, 0o600);
     const opened = fs.fstatSync(descriptor);
-    const after = fs.lstatSync(temporaryPath);
-    assertWithinTrustedRoot(temporaryPath, trustedRoot, 'write memory');
-    if (
-      !opened.isFile()
-      || after.isSymbolicLink()
-      || !after.isFile()
-      || !sameFileIdentity(after, opened)
-    ) {
-      throw new Error('Memory destination changed while it was being created.');
+    if (!opened.isFile()) {
+      throw new Error('Memory destination must be a regular file.');
     }
     fs.writeFileSync(descriptor, content, 'utf8');
     fs.fsyncSync(descriptor);
-    fs.closeSync(descriptor);
-    descriptor = undefined;
-    assertWithinTrustedRoot(filePath, trustedRoot, 'write memory');
-    fs.linkSync(temporaryPath, filePath);
   } catch (error) {
-    operationError = error;
+    if (error && error.code === 'EEXIST') {
+      const wrapper = new Error(`File already exists: ${filePath}`);
+      wrapper.code = 'EEXIST';
+      throw wrapper;
+    }
+    throw error;
   } finally {
     if (descriptor !== undefined) {
       try {
         fs.closeSync(descriptor);
-      } catch (error) {
-        cleanupError = error;
+      } catch {
+        // Ignore close errors
       }
     }
-    try {
-      fs.unlinkSync(temporaryPath);
-    } catch (error) {
-      if (!error || error.code !== 'ENOENT') cleanupError = cleanupError || error;
-    }
   }
-  if (operationError) throw operationError;
-  if (cleanupError) throw cleanupError;
 }
 
 function ensureProjectScopeIgnored(roots, scope) {

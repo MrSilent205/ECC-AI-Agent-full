@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { readInstallState } = require('../install-state');
-const { assertWithinTrustedRoot } = require('../path-safety');
+const { assertWithinTrustedRoot, isWithinRoot } = require('../path-safety');
 
 const CLAUDE_TARGETS = new Set(['claude', 'claude-project']);
 
@@ -71,9 +71,27 @@ function assertSafeSkillPath(targetPath, targetRoot, action) {
       throw error;
     }
     if (stats.isSymbolicLink()) {
-      throw new Error(
-        `Refusing to ${action} through symlinked Claude skill path: '${currentPath}'.`
-      );
+      let linkTarget;
+      try {
+        linkTarget = fs.readlinkSync(currentPath);
+      } catch {
+        // Fallback for systems where readlink fails
+        linkTarget = null;
+      }
+
+      if (linkTarget) {
+        const absoluteTarget = path.resolve(path.dirname(currentPath), linkTarget);
+        if (!isWithinRoot(absoluteTarget, targetRoot)) {
+          throw new Error(
+            `Refusing to ${action} through symlinked Claude skill path escaping root: '${currentPath}' -> '${absoluteTarget}'.`
+          );
+        }
+      } else {
+        // If we can't read the link, assume it's unsafe or a dangling link that shouldn't be here
+        throw new Error(
+          `Refusing to ${action} through unreadable or dangling symlinked Claude skill path: '${currentPath}'.`
+        );
+      }
     }
   }
 
