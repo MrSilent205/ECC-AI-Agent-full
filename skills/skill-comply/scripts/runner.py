@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
@@ -39,30 +40,46 @@ def run_scenario(
     scenario: Scenario,
     model: str = "sonnet",
     max_turns: int = 30,
-    timeout: int = 300,
+    timeout: int = 900,
+    fixtures_dir: Path | None = None,
 ) -> ScenarioRun:
     """Execute a scenario and extract tool calls from stream-json output."""
     if model not in ALLOWED_MODELS:
         raise ValueError(f"Unknown model: {model!r}. Allowed: {ALLOWED_MODELS}")
 
     sandbox_dir = _safe_sandbox_dir(scenario.id)
-    _setup_sandbox(sandbox_dir, scenario)
+    _setup_sandbox(sandbox_dir, scenario, fixtures_dir=fixtures_dir)
+    gh_bin = _install_gh_stub(SANDBOX_BASE)
+    env = {**os.environ, "PATH": f"{gh_bin}{os.pathsep}{os.environ.get('PATH', '')}"}
 
-    result = subprocess.run(
-        [
-            "claude", "-p", scenario.prompt,
-            "--model", model,
-            "--max-turns", str(max_turns),
-            "--add-dir", str(sandbox_dir),
-            "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep",
-            "--output-format", "stream-json",
-            "--verbose",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        cwd=sandbox_dir,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "claude", "-p", scenario.prompt,
+                "--model", model,
+                "--max-turns", str(max_turns),
+                "--add-dir", str(sandbox_dir),
+                "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep",
+                "--output-format", "stream-json",
+                "--verbose",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=sandbox_dir,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Keep the partial trace: aborting here would discard every scenario
+        # already graded. What the agent did before the cut-off still counts.
+        partial = exc.output or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode(errors="replace")
+        return ScenarioRun(
+            scenario=scenario,
+            observations=tuple(_parse_stream_json(partial)),
+            sandbox_dir=sandbox_dir,
+        )
 
     # claude -p returns rc=1 when --max-turns is reached, but the stream-json
     # output is still complete and parseable. Treat this graceful termination
@@ -122,14 +139,26 @@ def _safe_sandbox_dir(scenario_id: str) -> Path:
     return path
 
 
-def _setup_sandbox(sandbox_dir: Path, scenario: Scenario) -> None:
-    """Create sandbox directory and run setup commands."""
+def _setup_sandbox(
+    sandbox_dir: Path,
+    scenario: Scenario,
+    fixtures_dir: Path | None = None,
+) -> None:
+    """Create sandbox directory, its resources, and run setup commands.
+
+    Resources come from ``fixtures_dir`` (copied as-is) and the scenario's
+    ``files`` (path -> content). They are committed so the tree starts clean.
+    """
     _validate_sandbox_base()
     if sandbox_dir.exists():
         shutil.rmtree(sandbox_dir)
     sandbox_dir.mkdir(parents=True)
 
     subprocess.run(["git", "init"], cwd=sandbox_dir, capture_output=True)
+
+    if fixtures_dir is not None:
+        shutil.copytree(fixtures_dir, sandbox_dir, dirs_exist_ok=True)
+    _write_scenario_files(sandbox_dir, getattr(scenario, "files", ()))
 
     for cmd in scenario.setup_commands:
         parts = shlex.split(cmd)
@@ -145,6 +174,78 @@ def _setup_sandbox(sandbox_dir: Path, scenario: Scenario) -> None:
             # Setup tool not installed in this environment; skip rather than
             # crash the whole scenario. The compliance run continues.
             continue
+
+    _commit_initial_state(sandbox_dir)
+    _add_local_origin(sandbox_dir)
+
+
+GH_STUB = """#!/bin/sh
+# skill-comply stub: no network, no real PRs. Fakes the calls skills make.
+case "$1 $2" in
+  "pr create") echo "https://github.com/skill-comply/sandbox/pull/1" ;;
+  "pr view"|"pr list"|"repo view") echo "{}" ;;
+esac
+exit 0
+"""
+
+
+def _install_gh_stub(base: Path) -> Path:
+    """Write a fake ``gh`` under ``base/_bin`` and return that directory."""
+    bin_dir = base / "_bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    gh = bin_dir / "gh"
+    gh.write_text(GH_STUB)
+    gh.chmod(0o755)
+    return bin_dir
+
+
+def _add_local_origin(sandbox_dir: Path) -> None:
+    """Give the sandbox a bare local ``origin`` holding the baseline commit.
+
+    Skills that push or open PRs fail at once without a remote. A local bare
+    repo keeps the run offline and isolated from any real repository.
+    """
+    origin = sandbox_dir.parent / f"{sandbox_dir.name}.origin.git"
+    if origin.exists():
+        shutil.rmtree(origin)
+    subprocess.run(["git", "init", "--bare", str(origin)], capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(origin)],
+        cwd=sandbox_dir, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "push", "-u", "origin", "HEAD"], cwd=sandbox_dir, capture_output=True
+    )
+    # Scripts that find the default branch read refs/remotes/origin/HEAD.
+    subprocess.run(
+        ["git", "remote", "set-head", "origin", "-a"],
+        cwd=sandbox_dir, capture_output=True,
+    )
+
+
+def _write_scenario_files(
+    sandbox_dir: Path, files: tuple[tuple[str, str], ...]
+) -> None:
+    """Write scenario files, rejecting any path that leaves the sandbox."""
+    root = sandbox_dir.resolve()
+    for rel, content in files:
+        target = (root / rel).resolve()
+        target.relative_to(root)  # ValueError on traversal or absolute path
+        if target == root:
+            raise ValueError(f"Scenario file path must name a file: {rel!r}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+
+
+def _commit_initial_state(sandbox_dir: Path) -> None:
+    """Commit the starting files so the agent sees a clean tree and a HEAD."""
+    identity = ["-c", "user.name=skill-comply", "-c", "user.email=skill-comply@localhost"]
+    subprocess.run(["git", "add", "-A"], cwd=sandbox_dir, capture_output=True)
+    subprocess.run(
+        ["git", *identity, "commit", "--allow-empty", "-m", "chore: sandbox baseline"],
+        cwd=sandbox_dir,
+        capture_output=True,
+    )
 
 
 def _redact_home_path(text: str) -> str:

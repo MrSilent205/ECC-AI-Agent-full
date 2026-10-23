@@ -21,6 +21,7 @@ class Scenario:
     description: str
     prompt: str
     setup_commands: tuple[str, ...]
+    files: tuple[tuple[str, str], ...] = ()
 
 
 def generate_scenarios(
@@ -65,6 +66,10 @@ def generate_scenarios(
             description=s["description"],
             prompt=s["prompt"].strip(),
             setup_commands=tuple(s.get("setup_commands", [])),
+            files=tuple(
+                (str(path), str(content))
+                for path, content in (s.get("files") or {}).items()
+            ),
         ))
 
     return sorted(scenarios, key=lambda s: s.level)
