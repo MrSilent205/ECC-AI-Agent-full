@@ -266,6 +266,73 @@ def test_artifact_scope_ignores_links_inside_code_examples(project: Path) -> Non
     assert result.returncode == 0, result.stdout
 
 
+def test_artifact_scope_ignores_links_inside_html_comments(project: Path) -> None:
+    (project / "guide.md").write_text(
+        "Intro <!-- [old](missing-inline.md) --> text\n\n"
+        "<!--\nSee [draft](missing-draft.md).\n-->\n\n"
+        "Text <!-- --> [after](missing-after.md)\n",
+        encoding="utf-8",
+    )
+    result = run_audit(project, "artifacts")
+    assert result.returncode == 1
+    assert "missing-inline.md" not in result.stdout
+    assert "missing-draft.md" not in result.stdout
+    assert "Broken Markdown link: 'guide.md' -> 'missing-after.md'" in result.stdout
+
+
+def test_artifact_scope_reads_html_comments_as_commonmark_does(project: Path) -> None:
+    (project / "guide.md").write_text(
+        # -- an escaped opener is text, so the link after it is real --
+        "Intro \\<!-- [escaped](missing-escaped.md) -->\n\n"
+        # -- a comment that opens before a code span ends at its own closer --
+        "Note <!-- ` --> `sample` [after-code](missing-after-code.md)\n\n"
+        # -- a comment inside a line ends with its paragraph, so past a blank line it is text --
+        "Intro <!-- note\n\n[real](missing-real.md)\n-->\n\n"
+        # -- one that starts a line is an HTML block: it spans blank lines and takes the rest of
+        # -- the line that holds its closer --
+        "<!--\n[hidden](missing-hidden.md)\n\n[hidden2](missing-hidden2.md)\n-->\n\n"
+        "<!-- c --> [rest](missing-rest.md)\n\n"
+        # -- so does one that starts a list item or a block quote line --
+        "- <!--\n\n  [listed](missing-listed.md)\n  -->\n\n"
+        "> <!-- c --> [quoted](missing-quoted.md)\n\n"
+        # -- a list that starts at 2 cannot interrupt a paragraph; one that starts at 1 can --
+        "Paragraph\n2. <!-- c --> [numbered](missing-numbered.md)\n\n"
+        "1. first\n2. <!-- c --> [listed2](missing-listed2.md)\n\n"
+        "1. first\n   continued\n2. <!-- c --> [listed3](missing-listed3.md)\n\n"
+        "Paragraph\n1. <!-- c --> [one](missing-one.md)\n\n"
+        # -- after text in a list item, a comment is inline again --
+        "- item <!-- c\n\n  [item-real](missing-item-real.md)\n  -->\n\n"
+        # -- a comment where a destination must begin does not make a definition --
+        "[foo]: <!-- note --> missing-definition.md\n\n[foo]\n\n"
+        "[bar]: <!-- only a comment -->\n\n[bar]\n\n"
+        # -- a title may hold comment-shaped text; the destination is still audited --
+        '[titled](missing-titled.md "<!-- c -->")\n\n'
+        # -- a fence line inside a comment block is comment text; the fence after it is real --
+        "<!--\n```\n-->\n```\n[fenced](missing-fenced.md)\n```\n",
+        encoding="utf-8",
+    )
+    result = run_audit(project, "artifacts")
+    assert result.returncode == 1
+    assert "Broken Markdown link: 'guide.md' -> 'missing-escaped.md'" in result.stdout
+    assert (
+        "Broken Markdown link: 'guide.md' -> 'missing-after-code.md'" in result.stdout
+    )
+    assert "Broken Markdown link: 'guide.md' -> 'missing-real.md'" in result.stdout
+    assert "missing-hidden" not in result.stdout
+    assert "missing-rest.md" not in result.stdout
+    assert "missing-listed.md" not in result.stdout
+    assert "missing-quoted.md" not in result.stdout
+    assert "Broken Markdown link: 'guide.md' -> 'missing-item-real.md'" in result.stdout
+    assert "Broken Markdown link: 'guide.md' -> 'missing-numbered.md'" in result.stdout
+    assert "missing-listed2.md" not in result.stdout
+    assert "missing-listed3.md" not in result.stdout
+    assert "missing-one.md" not in result.stdout
+    assert "missing-definition.md" not in result.stdout
+    assert "Broken Markdown link: 'guide.md' -> 'missing-titled.md'" in result.stdout
+    assert "missing-fenced.md" not in result.stdout
+    assert result.stdout.count("Broken Markdown link") == 6, result.stdout
+
+
 def test_artifact_scope_ignores_title_with_escaped_quotes(project: Path) -> None:
     (project / "guide.md").write_text("# Guide\n", encoding="utf-8")
     (project / "index.md").write_text(

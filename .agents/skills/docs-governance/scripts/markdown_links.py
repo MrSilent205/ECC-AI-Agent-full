@@ -18,6 +18,14 @@ REFERENCE_DEFINITION_RE = re.compile(
 REFERENCE_USAGE_RE = re.compile(
     r"(?<![\\])(?:\\\\)*\[(?P<text>[^\]\n]+)\](?:\[(?P<label>[^\]\n]*)\])?"
 )
+BLANK_LINE_RE = re.compile(r"\n[ \t]*\r?\n")
+# -- what may come before a block on its line: indentation and block quote or list markers --
+CONTAINER_PREFIX_RE = re.compile(r"(?:[ \t]*(?:>|[-+*][ \t]|\d{1,9}[.)][ \t]))*[ \t]*")
+CONTAINER_MARKER_RE = re.compile(r"[ \t]*(?:>|[-+*][ \t]|\d{1,9}[.)][ \t])")
+ORDERED_MARKER_RE = re.compile(r"[ \t]*(\d{1,9})[.)]")
+LINK_TITLE_RE = re.compile(
+    r'\s+(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|\([^()]*\))\s*$'
+)
 EXTERNAL_URI_RE = re.compile(
     r"^(?:[A-Za-z][A-Za-z0-9+.-]*://|(?:data|doi|geo|irc|magnet|mailto|news|sms|tel|urn):)",
     re.IGNORECASE,
@@ -28,7 +36,14 @@ def without_fenced_code(text: str) -> str:
     output: list[str] = []
     fence_character: str | None = None
     fence_length = 0
+    # -- inside an HTML comment block that opened on an earlier line, a fence line is comment
+    # -- text, which the inline pass blanks with the rest of the comment --
+    in_comment = False
     for line in text.splitlines(keepends=True):
+        if in_comment:
+            in_comment = "-->" not in line
+            output.append(line)
+            continue
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
         if fence_character is None and marker:
             fence_character = marker.group(1)[0]
@@ -45,14 +60,99 @@ def without_fenced_code(text: str) -> str:
                 fence_length = 0
             output.append("\n" if line.endswith("\n") else "")
             continue
+        opener = re.match(r"^ {0,3}<!--", line)
+        in_comment = bool(opener) and "-->" not in line[opener.end() - 2 :]
         output.append(line)
     return "".join(output)
 
 
-def without_inline_code(text: str) -> str:
+def _is_escaped(text: str, index: int) -> bool:
+    backslashes = 0
+    while index - backslashes > 0 and text[index - backslashes - 1] == "\\":
+        backslashes += 1
+    return backslashes % 2 == 1
+
+
+def _continues_a_paragraph(text: str, line_start: int) -> bool:
+    """Whether the line at `line_start` follows a paragraph line.
+
+    A blank line, a list or block quote line, and an indented line, which may continue a list
+    item, are not taken for one.
+    """
+    if line_start == 0:
+        return False
+    previous = text[text.rfind("\n", 0, line_start - 1) + 1 : line_start - 1]
+    return (
+        bool(previous.strip())
+        and not previous[0].isspace()
+        and not CONTAINER_MARKER_RE.match(previous)
+    )
+
+
+def _html_comment_end(text: str, start: int, closing: int, blank: int) -> int:
+    """Where the comment that opens at `start` and closes at `closing` ends, or -1 if it is text.
+
+    One that starts a block, after nothing but indentation and block quote or list markers on
+    its line (as in `- <!--`), opens an HTML block. The block may span blank lines and takes the
+    rest of the line that holds its closer. A list that starts at a number other than 1 cannot
+    interrupt a paragraph, so after a paragraph line `2. <!--` is still paragraph text. One after
+    text on its line is inline HTML, which cannot outlast its paragraph, so when the first blank
+    line after it, at `blank`, comes before its closer, it is text.
+    """
+    # -- only the 64 characters before the opener are read, so a long line stays cheap --
+    window = max(0, start - 64)
+    line_start = text.rfind("\n", window, start) + 1
+    if (line_start or not window) and CONTAINER_PREFIX_RE.fullmatch(
+        text, line_start, start
+    ):
+        ordered = ORDERED_MARKER_RE.match(text, line_start, start)
+        if not (
+            ordered
+            and int(ordered.group(1)) != 1
+            and _continues_a_paragraph(text, line_start)
+        ):
+            newline = text.find("\n", closing + 3)
+            return len(text) if newline == -1 else newline
+    return -1 if blank < closing else closing + 3
+
+
+def without_inline_code_and_html_comments(text: str) -> str:
+    """Blank out inline code spans and HTML comments, whichever opens first.
+
+    A comment runs from `<!--` to the first `-->` after it (`<!-->` and `<!--->` included), within
+    the limits that `_html_comment_end` sets. It becomes an opaque run of NUL characters, so a
+    link or a reference definition cannot continue through it, as none can through raw HTML. An
+    escaped `\\<!--`, or an opener with no closer, stays literal text, as in CommonMark.
+    """
     output: list[str] = []
     cursor = 0
+    # -- the first closer after an opener and the first blank line after it, kept while valid --
+    closing = -1
+    blank = -1
+    comments_can_close = True
     while cursor < len(text):
+        if (
+            comments_can_close
+            and text.startswith("<!--", cursor)
+            and not _is_escaped(text, cursor)
+        ):
+            if closing < cursor + 2:
+                closing = text.find("-->", cursor + 2)
+            if blank < cursor:
+                match = BLANK_LINE_RE.search(text, cursor)
+                blank = match.start() if match else len(text)
+            end = (
+                -1 if closing == -1 else _html_comment_end(text, cursor, closing, blank)
+            )
+            if end != -1:
+                output.extend(
+                    "\n" if character == "\n" else "\0"
+                    for character in text[cursor:end]
+                )
+                cursor = end
+                continue
+            # -- no closer here means none for any later opener either --
+            comments_can_close = closing != -1
         if text[cursor] != "`":
             output.append(text[cursor])
             cursor += 1
@@ -173,8 +273,16 @@ def reference_link_targets(text: str) -> list[str]:
 
 
 def markdown_link_targets(text: str) -> list[str]:
-    text = without_inline_code(without_fenced_code(text))
-    return inline_link_targets(text) + reference_link_targets(text)
+    text = without_inline_code_and_html_comments(without_fenced_code(text))
+    targets = inline_link_targets(text) + reference_link_targets(text)
+    # -- a destination made of a blanked comment is no link; a title may hold one --
+    return [target for target in targets if "\0" not in _without_title(target)]
+
+
+def _without_title(raw: str) -> str:
+    target = raw.strip()
+    title = None if target.startswith("<") else LINK_TITLE_RE.search(target)
+    return target[: title.start()] if title else target
 
 
 def normalize_link_target(raw: str) -> str | None:
@@ -186,12 +294,7 @@ def normalize_link_target(raw: str) -> str | None:
             return None
         target = target[1:closing]
     else:
-        title = re.search(
-            r'\s+(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|\([^()]*\))\s*$',
-            target,
-        )
-        if title:
-            target = target[: title.start()]
+        target = _without_title(target)
     # Unescape supported Markdown punctuation before Windows path separators.
     target = re.sub(r"\\([()\[\]'])", r"\1", target)
     target = unquote(target.split("#", 1)[0].split("?", 1)[0]).replace("\\", "/")
