@@ -66,6 +66,8 @@ async function runTests() {
       String.raw`File not found: \\server\share\three.js`,
       String.raw`File not found: C:/project-a\src\one.js`,
       String.raw`File not found: D:\project-b/src/two.js`,
+      String.raw`File not found: \work\one.js`,
+      String.raw`File not found: \Program Files\node.js`,
       'File not found: C:\\project-a\\',
       'File not found: D:/project-b/',
       'File not found: \\\\server\\share\\',
@@ -290,6 +292,19 @@ async function runTests() {
     assert.strictEqual(backupPatterns.length, 1);
     assert.strictEqual(backupPatterns[0].count, 3);
     assert.strictEqual(generateReport(backupPatterns).status, 'attention_needed');
+  })) passed += 1; else failed += 1;
+
+  if (await test('inspect groups current-drive-root Windows paths', async () => {
+    const runs = [
+      String.raw`File not found: \work\one.js`,
+      String.raw`File not found: \work\two.js`,
+      String.raw`File not found: \work\three.js`,
+    ].map((failureReason, index) => makeSkillRun({ id: `root-relative-${index}`, failureReason }));
+    const report = inspect({ getStatus: () => ({ skillRuns: { recent: runs } }) });
+    assert.strictEqual(report.status, 'attention_needed');
+    assert.strictEqual(report.patternCount, 1);
+    assert.strictEqual(report.patterns[0].count, 3);
+    assert.strictEqual(report.patterns[0].normalizedReason, 'file not found: <path>');
   })) passed += 1; else failed += 1;
 
   if (await test('inspect groups quoted Windows paths with apostrophes and preserves diagnostics', async () => {
