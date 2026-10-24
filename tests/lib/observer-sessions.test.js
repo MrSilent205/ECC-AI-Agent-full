@@ -182,6 +182,7 @@ test('resolveProjectContext follows the remote-hash id when a remote was added a
     assert.strictEqual(result.projectDir, path.join(storage, 'projects', remoteId));
     assert.ok(stderr.includes(pathId) && stderr.includes(remoteId), stderr);
     assert.ok(stderr.includes(`instinct-cli.py projects merge ${pathId} ${remoteId} --dry-run`), stderr);
+    assert.ok(stderr.includes('Merge the others with'), stderr);
   } finally {
     cleanup(root);
   }
@@ -247,6 +248,7 @@ test('resolveProjectContext moves off a sole legacy entry once the observer has 
     assert.strictEqual(result.projectId, remoteId);
     assert.deepStrictEqual(result.aliasProjectIds, [pathId]);
     assert.ok(stderr.includes(`instinct-cli.py projects merge ${pathId} ${remoteId} --dry-run`), stderr);
+    assert.ok(stderr.includes(`Once ${remoteId} appears in projects.json`), stderr);
   } finally {
     cleanup(root);
   }

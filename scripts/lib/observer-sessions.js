@@ -129,9 +129,11 @@ function pickRootProjectId(entries, projectRoot) {
 
   const others = ids.filter(id => id !== chosenId);
   if (others.length > 0) {
+    // `projects merge` needs both ids in projects.json; the observer registers its id when it next runs.
+    const mergeHint = ids.includes(chosenId) ? 'Merge the others with' : `Once ${chosenId} appears in projects.json, merge the others with`;
     process.stderr.write(
       `[ecc] ${projectRoot} has project ids ${[chosenId, ...others].join(', ')}; using ${chosenId}. `
-      + `Merge the others with: ${others.map(id => `instinct-cli.py projects merge ${id} ${chosenId} --dry-run`).join('; ')}\n`
+      + `${mergeHint}: ${others.map(id => `instinct-cli.py projects merge ${id} ${chosenId} --dry-run`).join('; ')}\n`
     );
   }
   return chosenId;
