@@ -91,6 +91,29 @@ function computeProjectId(projectRoot) {
   return crypto.createHash('sha256').update(hashInput).digest('hex').slice(0, 12);
 }
 
+/**
+ * Choose between several projects.json entries that share one root.
+ *
+ * This happens when a repository gains a remote after its first session:
+ * detect-project.sh starts writing under the remote-hash id while the old
+ * path-hash entry stays in the registry. Prefer the id the observer derives
+ * now, then the most recently seen entry, and tell the user how to merge.
+ */
+function pickDuplicateRootEntry(entries, projectRoot) {
+  const computedId = computeProjectId(projectRoot);
+  const lastSeen = entry => Date.parse(entry.last_seen || '') || 0;
+  const chosen = entries.find(entry => entry.id === computedId)
+    || entries.reduce((latest, entry) => (lastSeen(entry) > lastSeen(latest) ? entry : latest));
+
+  const ids = entries.map(entry => entry.id);
+  const others = ids.filter(id => id !== chosen.id);
+  process.stderr.write(
+    `[ecc] projects.json has ${entries.length} entries for ${projectRoot} (${ids.join(', ')}); using ${chosen.id}. `
+    + `Merge the others with: ${others.map(id => `instinct-cli.py projects merge ${id} ${chosen.id} --dry-run`).join('; ')}\n`
+  );
+  return chosen;
+}
+
 function resolveProjectContext(cwd = process.cwd()) {
   const projectRoot = resolveProjectRoot(cwd);
   if (!projectRoot) {
@@ -100,8 +123,10 @@ function resolveProjectContext(cwd = process.cwd()) {
   }
 
   const registry = readProjectRegistry();
-  const registryEntry = Object.values(registry).find(entry => entry && path.resolve(entry.root || '') === projectRoot);
-  const projectId = registryEntry?.id || computeProjectId(projectRoot);
+  const rootEntries = Object.values(registry).filter(entry => entry && entry.id && path.resolve(entry.root || '') === projectRoot);
+  const projectId = rootEntries.length > 1
+    ? pickDuplicateRootEntry(rootEntries, projectRoot).id
+    : rootEntries[0]?.id || computeProjectId(projectRoot);
   const projectDir = path.join(getProjectsDir(), projectId);
   ensureDir(projectDir);
 
