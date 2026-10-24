@@ -85,9 +85,16 @@ function resolveProjectRoot(cwd = process.cwd()) {
   return '';
 }
 
+function resolveMainWorktreeRoot(projectRoot) {
+  const listing = runGit(['worktree', 'list', '--porcelain'], projectRoot);
+  const line = listing.split(/\r?\n/).find(entry => entry.startsWith('worktree '));
+  return line ? line.slice('worktree '.length) : '';
+}
+
 function computeProjectId(projectRoot) {
   const remoteUrl = stripRemoteCredentials(runGit(['remote', 'get-url', 'origin'], projectRoot));
-  const hashInput = normalizeRemoteUrl(remoteUrl) || remoteUrl || projectRoot;
+  // Same fallback as detect-project.sh: a remote-free linked worktree shares its main checkout's id.
+  const hashInput = normalizeRemoteUrl(remoteUrl) || remoteUrl || resolveMainWorktreeRoot(projectRoot) || projectRoot;
   return crypto.createHash('sha256').update(hashInput).digest('hex').slice(0, 12);
 }
 
@@ -129,8 +136,23 @@ function resolveProjectContext(cwd = process.cwd()) {
     : rootEntries[0]?.id || computeProjectId(projectRoot);
   const projectDir = path.join(getProjectsDir(), projectId);
   ensureDir(projectDir);
+  const aliasProjectIds = rootEntries.map(entry => entry.id).filter(id => id !== projectId);
 
-  return { projectId, projectRoot, projectDir, isGlobal: false };
+  return { projectId, projectRoot, projectDir, isGlobal: false, aliasProjectIds };
+}
+
+/**
+ * Contexts for the other registry ids that share this root. A remote added
+ * mid-session moves the root to a new id, so a SessionStart lease can still
+ * sit under one of these.
+ */
+function getAliasContexts(context) {
+  return (context.aliasProjectIds || []).map(projectId => ({
+    ...context,
+    projectId,
+    projectDir: path.join(getProjectsDir(), projectId),
+    aliasProjectIds: []
+  }));
 }
 
 function getObserverPidFile(context) {
@@ -173,6 +195,11 @@ function writeSessionLease(context, rawSessionId = process.env.CLAUDE_SESSION_ID
   };
   fs.writeFileSync(leaseFile, JSON.stringify(payload, null, 2) + '\n');
   return leaseFile;
+}
+
+function hasSessionLease(context, rawSessionId = process.env.CLAUDE_SESSION_ID) {
+  const leaseFile = getSessionLeaseFile(context, rawSessionId);
+  return Boolean(leaseFile) && fs.existsSync(leaseFile);
 }
 
 function removeSessionLease(context, rawSessionId = process.env.CLAUDE_SESSION_ID) {
@@ -226,10 +253,12 @@ module.exports = {
   getHomunculusDir,
   normalizeRemoteUrl,
   resolveProjectContext,
+  getAliasContexts,
   getObserverActivityFile,
   getObserverPidFile,
   getSessionLeaseDir,
   writeSessionLease,
+  hasSessionLease,
   removeSessionLease,
   listSessionLeases,
   stopObserverForContext,

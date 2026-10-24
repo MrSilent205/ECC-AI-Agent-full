@@ -226,6 +226,35 @@ test('resolveProjectContext keeps a single registry entry even when its id diffe
   }
 });
 
+test('resolveProjectContext uses the main checkout id for a remote-free linked worktree with duplicate entries', () => {
+  const root = createTempDir();
+  try {
+    const storage = path.join(root, 'store');
+    const main = path.join(root, 'main');
+    const worktree = path.join(root, 'linked');
+    fs.mkdirSync(main, { recursive: true });
+    const git = args => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: main, stdio: 'ignore' });
+    git(['init']);
+    git(['commit', '--allow-empty', '-m', 'init']);
+    git(['worktree', 'add', worktree]);
+    const mainRoot = fs.realpathSync(main);
+    const worktreeRoot = fs.realpathSync(worktree);
+    const legacyId = hashId(worktreeRoot);
+    const mainId = hashId(mainRoot);
+    // detect-project.sh hashes the main checkout for a remote-free worktree.
+    writeRegistry(storage, [
+      { id: legacyId, root: worktreeRoot, last_seen: '2026-10-20T00:00:00Z' },
+      { id: mainId, root: worktreeRoot, last_seen: '2026-10-19T00:00:00Z' },
+    ]);
+
+    const { result } = resolveIn(storage, worktree);
+    assert.strictEqual(result.projectId, mainId);
+    assert.deepStrictEqual(result.aliasProjectIds, [legacyId]);
+  } finally {
+    cleanup(root);
+  }
+});
+
 console.log(`\nPassed: ${passed}`);
 console.log(`Failed: ${failed}`);
 process.exit(failed > 0 ? 1 : 0);
