@@ -85,10 +85,58 @@ function resolveProjectRoot(cwd = process.cwd()) {
   return '';
 }
 
+function resolveMainWorktreeRoot(projectRoot) {
+  const listing = runGit(['worktree', 'list', '--porcelain'], projectRoot);
+  const line = listing.split(/\r?\n/).find(entry => entry.startsWith('worktree '));
+  return line ? line.slice('worktree '.length) : '';
+}
+
 function computeProjectId(projectRoot) {
   const remoteUrl = stripRemoteCredentials(runGit(['remote', 'get-url', 'origin'], projectRoot));
-  const hashInput = normalizeRemoteUrl(remoteUrl) || remoteUrl || projectRoot;
+  // Same fallback as detect-project.sh: a remote-free linked worktree shares its main checkout's id.
+  const hashInput = normalizeRemoteUrl(remoteUrl) || remoteUrl || resolveMainWorktreeRoot(projectRoot) || projectRoot;
   return crypto.createHash('sha256').update(hashInput).digest('hex').slice(0, 12);
+}
+
+// detect-project.sh creates instincts/ before it updates projects.json, so a
+// folder with instincts/ is one the observer writes to (a bare folder may be
+// one this module created).
+function hasObserverData(projectId) {
+  return fs.existsSync(path.join(getProjectsDir(), projectId, 'instincts'));
+}
+
+/**
+ * Choose the project id for a root that has registry entries.
+ *
+ * After a repository gains a remote, detect-project.sh writes under the
+ * remote-hash id while the old path-hash entry stays in the registry. Prefer
+ * the id the observer derives now when it is registered or already holds
+ * observer data; otherwise keep a sole entry, or take the most recently seen
+ * of several. When other ids remain for the root, say how to merge them.
+ */
+function pickRootProjectId(entries, projectRoot) {
+  const computedId = computeProjectId(projectRoot);
+  const ids = entries.map(entry => entry.id);
+  const lastSeen = entry => Date.parse(entry.last_seen || '') || 0;
+  let chosenId;
+  if (ids.includes(computedId) || hasObserverData(computedId)) {
+    chosenId = computedId;
+  } else if (entries.length === 1) {
+    return ids[0];
+  } else {
+    chosenId = entries.reduce((latest, entry) => (lastSeen(entry) > lastSeen(latest) ? entry : latest)).id;
+  }
+
+  const others = ids.filter(id => id !== chosenId);
+  if (others.length > 0) {
+    // `projects merge` needs both ids in projects.json; the observer registers its id when it next runs.
+    const mergeHint = ids.includes(chosenId) ? 'Merge the others with' : `Once ${chosenId} appears in projects.json, merge the others with`;
+    process.stderr.write(
+      `[ecc] ${projectRoot} has project ids ${[chosenId, ...others].join(', ')}; using ${chosenId}. `
+      + `${mergeHint}: ${others.map(id => `instinct-cli.py projects merge ${id} ${chosenId} --dry-run`).join('; ')}\n`
+    );
+  }
+  return chosenId;
 }
 
 function resolveProjectContext(cwd = process.cwd()) {
@@ -100,12 +148,29 @@ function resolveProjectContext(cwd = process.cwd()) {
   }
 
   const registry = readProjectRegistry();
-  const registryEntry = Object.values(registry).find(entry => entry && path.resolve(entry.root || '') === projectRoot);
-  const projectId = registryEntry?.id || computeProjectId(projectRoot);
+  const rootEntries = Object.values(registry).filter(entry => entry && entry.id && path.resolve(entry.root || '') === projectRoot);
+  const projectId = rootEntries.length > 0
+    ? pickRootProjectId(rootEntries, projectRoot)
+    : computeProjectId(projectRoot);
   const projectDir = path.join(getProjectsDir(), projectId);
   ensureDir(projectDir);
+  const aliasProjectIds = rootEntries.map(entry => entry.id).filter(id => id !== projectId);
 
-  return { projectId, projectRoot, projectDir, isGlobal: false };
+  return { projectId, projectRoot, projectDir, isGlobal: false, aliasProjectIds };
+}
+
+/**
+ * Contexts for the other registry ids that share this root. A remote added
+ * mid-session moves the root to a new id, so a SessionStart lease can still
+ * sit under one of these.
+ */
+function getAliasContexts(context) {
+  return (context.aliasProjectIds || []).map(projectId => ({
+    ...context,
+    projectId,
+    projectDir: path.join(getProjectsDir(), projectId),
+    aliasProjectIds: []
+  }));
 }
 
 function getObserverPidFile(context) {
@@ -201,6 +266,7 @@ module.exports = {
   getHomunculusDir,
   normalizeRemoteUrl,
   resolveProjectContext,
+  getAliasContexts,
   getObserverActivityFile,
   getObserverPidFile,
   getSessionLeaseDir,
