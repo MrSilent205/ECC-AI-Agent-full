@@ -23,6 +23,16 @@ LAST_ANALYSIS_EPOCH=0
 # Minimum seconds between analyses (prevents rapid re-triggering)
 ANALYSIS_COOLDOWN="${ECC_OBSERVER_ANALYSIS_COOLDOWN:-60}"
 IDLE_TIMEOUT_SECONDS="${ECC_OBSERVER_IDLE_TIMEOUT_SECONDS:-1800}"
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Session-guardian: disable all scheduler gates. These default to active-hours
+# (08:00-23:00) and 30-min idle detection, which only skip cycles to save tokens.
+# Set both to 0 so the observer runs on every interval regardless of time of day
+# or user idle state.
+export OBSERVER_ACTIVE_HOURS_START=0
+export OBSERVER_ACTIVE_HOURS_END=0
+export OBSERVER_MAX_IDLE_SECONDS=0
+
 SESSION_LEASE_DIR="${PROJECT_DIR}/.observer-sessions"
 ACTIVITY_FILE="${PROJECT_DIR}/.observer-last-activity"
 
@@ -223,9 +233,26 @@ analyze_observations() {
     return
   fi
 
-  # Sample recent observations instead of loading the entire file (#521).
-  # This prevents multi-MB payloads from being passed to the LLM.
-  MAX_ANALYSIS_LINES="${ECC_OBSERVER_MAX_ANALYSIS_LINES:-500}"
+  # Sample a bounded window of recent observations instead of loading the
+  # entire file (#521).
+  #
+  # Both limits matter, and the byte cap is the one that actually keeps the
+  # analysis inside the watchdog budget. The line cap is a cheap first cut:
+  # observations vary wildly in size (a single Bash observation carrying a
+  # tool-result can be 20KB), so 500 lines is not "500 observations" and was
+  # the source of the timeout/retry/repeat death spiral (#2741) — the analysis
+  # timed out at the default 120s, retained the observations for retry, the
+  # file grew, and the next cycle timed out faster. Capping bytes bounds the
+  # prompt regardless of how many lines happen to fit.
+  #
+  # These defaults assume the default ECC_OBSERVER_TIMEOUT_SECONDS=120. On a
+  # slow model or a congested gateway, even 16KB can exceed that; raise
+  # ECC_OBSERVER_TIMEOUT_SECONDS (and ECC_OBSERVER_ANALYSIS_COOLDOWN) before
+  # raising either cap. Depth is traded for timeliness here — a prompt too
+  # large to finish produces zero instincts, while a smaller one usually
+  # produces some.
+  MAX_ANALYSIS_LINES="${ECC_OBSERVER_MAX_ANALYSIS_LINES:-25}"
+  MAX_ANALYSIS_BYTES="${ECC_OBSERVER_MAX_ANALYSIS_BYTES:-16384}"
   observer_tmp_dir="${PROJECT_DIR}/.observer-tmp"
   mkdir -p "$observer_tmp_dir"
   # Keep the XXXXXX run at the very end of the template: BSD/macOS mktemp only
@@ -244,7 +271,28 @@ analyze_observations() {
     return
   fi
   analysis_count=$(wc -l < "$analysis_file" 2>/dev/null || echo 0)
-  echo "[$(date)] Using last $analysis_count of $obs_count observations for analysis" >> "$LOG_FILE"
+  analysis_bytes=$(wc -c < "$analysis_file" 2>/dev/null || echo 0)
+  echo "[$(date)] Using last $analysis_count of $obs_count observations for analysis (${analysis_bytes} bytes)" >> "$LOG_FILE"
+
+  # Enforce the byte cap on top of the line cap. A single observation can be
+  # tens of kilobytes (Bash tool results carry full stdout/stderr), so the
+  # line cap alone does not bound the prompt size (#2741). Truncate from the
+  # head of the window so the most recent observations are kept.
+  if [ "$analysis_bytes" -gt "$MAX_ANALYSIS_BYTES" ]; then
+    # Drop the oldest lines until the window fits, keeping at least one.
+    while [ "$analysis_bytes" -gt "$MAX_ANALYSIS_BYTES" ] && [ "$analysis_count" -gt 1 ]; do
+      tail -n "$((analysis_count - 1))" "$analysis_file" > "$analysis_file.tmp" 2>/dev/null \
+        && mv "$analysis_file.tmp" "$analysis_file" || break
+      analysis_count=$(wc -l < "$analysis_file" 2>/dev/null || echo 0)
+      analysis_bytes=$(wc -c < "$analysis_file" 2>/dev/null || echo 0)
+    done
+    if [ "$analysis_bytes" -gt "$MAX_ANALYSIS_BYTES" ]; then
+      echo "[$(date)] Could not trim below ${analysis_bytes} bytes (cap ${MAX_ANALYSIS_BYTES}, ${analysis_count} observations); a single observation exceeds the cap" >> "$LOG_FILE"
+    else
+      echo "[$(date)] Trimmed window to ${analysis_bytes} bytes / $analysis_count observations" >> "$LOG_FILE"
+    fi
+  fi
+  echo "[$(date)] Using last $analysis_count of $obs_count observations for analysis (${analysis_bytes} bytes)" >> "$LOG_FILE"
 
   # Claude Code resolves relative paths against the user's home directory on
   # macOS/Linux, even though the observer changes to PROJECT_DIR first. Use
@@ -327,31 +375,73 @@ PROMPT
     return
   fi
 
-  timeout_seconds="${ECC_OBSERVER_TIMEOUT_SECONDS:-120}"
-  # Auto-scale max_turns proportional to analysis batch size when not explicitly set.
-  # The old hardcoded default of 20 is insufficient for the 500-line MAX_ANALYSIS_LINES
-  # default: Claude hits --max-turns before it can write all discovered instinct files.
-  # Formula: 1 turn per 10 analysis lines, floor 20, cap 100. (#2035)
+  timeout_seconds="${ECC_OBSERVER_TIMEOUT_SECONDS:-0}"
+  if [ "$timeout_seconds" -le 0 ]; then
+    # Auto-scale the analysis watchdog to the payload it is watching. A fixed
+    # default is what produced the timeout/retry/repeat death spiral (#2741):
+    # 120s was fine for a small batch but guaranteed to fail for a large one,
+    # and a guaranteed failure retains observations, grows the file, and makes
+    # the next cycle fail faster. Scale from the trimmed byte count so the
+    # watchdog tracks the actual work rather than an arbitrary line count.
+    #
+    # Budget 12 bytes/sec of prompt. Measured on this project: an 11,430-byte
+    # prompt took 932s and hit --max-turns, i.e. ~12.3 bytes/sec, so 120s was
+    # wrong by a factor of eight for a payload of that size.
+    #
+    # The ceiling must be high enough to cover a full MAX_ANALYSIS_BYTES
+    # payload, otherwise the watchdog kills every large analysis and the loop
+    # falls back into the death spiral (#2741). At 12 bytes/sec the 16,384-byte
+    # default cap needs 1,365s, so a 900s ceiling was itself a guaranteed
+    # timeout for any payload above ~10.8KB. 1,800s covers up to 21.6KB and
+    # keeps a misconfigured cap from pinning the watchdog too long. On a slow
+    # model or congested gateway this will still be optimistic — set
+    # ECC_OBSERVER_TIMEOUT_SECONDS explicitly rather than raising the cap.
+    timeout_seconds=$(( analysis_bytes / 12 ))
+    [ "$timeout_seconds" -lt 60 ] && timeout_seconds=60
+    [ "$timeout_seconds" -gt 1800 ] && timeout_seconds=1800
+  fi
+  echo "[$(date)] Analysis watchdog: ${timeout_seconds}s for ${analysis_bytes} bytes / $analysis_count observations" >> "$LOG_FILE"
+  # Auto-scale max_turns to the watchdog budget so it stays correct even when
+  # ECC_OBSERVER_TIMEOUT_SECONDS overrides the auto-scaling.
   if [ -n "${ECC_OBSERVER_MAX_TURNS:-}" ]; then
     max_turns="${ECC_OBSERVER_MAX_TURNS}"
   else
-    max_turns=$(( analysis_count / 10 ))
-    if [ "$max_turns" -lt 20 ]; then max_turns=20; fi
-    if [ "$max_turns" -gt 100 ]; then max_turns=100; fi
+    # Scale max_turns to the watchdog budget, not to the line count.
+    #
+    # The old formula (1 turn per 10 lines, floor 20) was wrong in two
+    # directions. On a small batch it over-provisioned turns; on a large one it
+    # under-provisioned catastrophically: 11 observations gave 11/10=1 turn,
+    # clamped to the 20-turn floor, and Claude hit --max-turns at 932s without
+    # writing a single instinct file (#2741). A max-turns failure is the
+    # worst-shaped failure the loop can hit, because it retains the
+    # observations and the next retry is identical — the death spiral.
+    #
+    # Derive turns from the payload size, not from the watchdog budget.
+    #
+    # A turn costs ~47s on this project (11,430 bytes in 20 turns) and the
+    # budget is 12 bytes/sec, so one turn consumes 12*47 = 559 bytes of
+    # watchdog. That makes turns = bytes/559 the right formula; use bytes/600,
+    # which is conservative. Do NOT derive turns from timeout_seconds: a
+    # 12,692-byte payload gets a 1,058s watchdog but needs 23 turns, and
+    # timeout/60 would hand out only 17 -- a guaranteed --max-turns failure,
+    # which retains the observations and restarts the death spiral (#2741).
+    max_turns=$(( analysis_bytes / 600 ))
+    [ "$max_turns" -lt 4 ] && max_turns=4
+    [ "$max_turns" -gt 100 ] && max_turns=100
   fi
   exit_code=0
 
-  # Sanitize max_turns. The auto-scaled path above always yields a valid value >=20,
-  # but an explicit ECC_OBSERVER_MAX_TURNS override may be non-numeric, empty, or too
-  # small, so guard here and fall back to the safe default of 20.
+  # Sanitize max_turns. The auto-scaled path above always yields a valid value
+  # >=4, but an explicit ECC_OBSERVER_MAX_TURNS override may be non-numeric,
+  # empty, or too small to make progress, so guard here.
   case "$max_turns" in
     ''|*[!0-9]*)
-      max_turns=20
+      max_turns=4
       ;;
   esac
 
   if [ "$max_turns" -lt 4 ]; then
-    max_turns=20
+    max_turns=4
   fi
 
   # Ensure CWD is PROJECT_DIR so the relative analysis_relpath resolves correctly
@@ -388,15 +478,33 @@ PROMPT
   # stdin is explicitly closed with </dev/null: on Git Bash/MSYS2 the backgrounded
   # child otherwise inherits an open stdin, and claude waits on it, warns
   # "no stdin data received", and exits 1 before reading the analysis file (#2452).
-  # Model is configurable via ECC_OBSERVER_MODEL (defaults to haiku for cost efficiency);
-  # e.g. ECC_OBSERVER_MODEL=opus for higher-quality instinct extraction. Heavier models are
-  # slower — consider raising ECC_OBSERVER_TIMEOUT_SECONDS (default 120s) so the watchdog
-  # doesn't kill the analysis mid-run.
+  # Model used for each analysis pass. Default is inherited from ANTHROPIC_MODEL
+  # (and the ANTHROPIC_DEFAULT_*_MODEL tier overrides), which is the same path the
+  # interactive session already uses. Set ECC_OBSERVER_MODEL to override, e.g.
+  # ECC_OBSERVER_MODEL=claude-haiku-5-5 for cheaper, faster passes (less thorough
+  # instincts) or ECC_OBSERVER_MODEL=claude-opus-5-5 for deeper pattern extraction.
+  # IMPORTANT: do NOT pass the model as a --model flag. The CLI handles the model
+  # name correctly only when it comes from ANTHROPIC_MODEL; a --model value is
+  # rejected with unrecognized_model and hangs the analysis until the watchdog
+  # kills it. Leave ECC_OBSERVER_MODEL unset to inherit, and set the tier overrides
+  # (ANTHROPIC_DEFAULT_SONNET_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL,
+  # ANTHROPIC_DEFAULT_HAIKU_MODEL) so subagent spawns inherit the same alias.
+  # Heavier models are slower — consider raising ECC_OBSERVER_TIMEOUT_SECONDS
+  # (default 120s) so the watchdog doesn't kill the analysis mid-run.
+  MODEL_FLAG=""
+  if [ -n "$ECC_OBSERVER_MODEL" ]; then
+    MODEL_FLAG="--model $ECC_OBSERVER_MODEL"
+  fi
+  # analysis mid-run.
   # Job control gives the background Claude command its own process group on
   # Bash, including macOS's Bash 3.2 and Git Bash. That lets timeout/signal
   # cleanup terminate tool subprocesses as well as the direct CLI process.
   set -m
-  ECC_SKIP_OBSERVE=1 ECC_HOOK_PROFILE=minimal claude --model "${ECC_OBSERVER_MODEL:-haiku}" --max-turns "$max_turns" --print \
+  MODEL_FLAG=""
+  if [ -n "$ECC_OBSERVER_MODEL" ]; then
+    MODEL_FLAG="--model $ECC_OBSERVER_MODEL"
+  fi
+  ECC_SKIP_OBSERVE=1 ECC_HOOK_PROFILE=minimal claude $MODEL_FLAG --max-turns "$max_turns" --print \
     --allowedTools "Read,Write" \
     -p "$prompt_content" < /dev/null >&8 2>> "$LOG_FILE" &
   CLAUDE_PID=$!
