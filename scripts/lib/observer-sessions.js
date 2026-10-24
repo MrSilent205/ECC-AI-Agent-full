@@ -98,30 +98,42 @@ function computeProjectId(projectRoot) {
   return crypto.createHash('sha256').update(hashInput).digest('hex').slice(0, 12);
 }
 
-/**
- * Choose between several projects.json entries that share one root.
- *
- * This happens when a repository gains a remote after its first session:
- * detect-project.sh starts writing under the remote-hash id while the old
- * path-hash entry stays in the registry. Prefer the id the observer derives
- * now (when it is registered or its folder exists), then the most recently
- * seen entry, and tell the user how to merge.
- */
-function pickDuplicateRootId(entries, projectRoot) {
-  const computedId = computeProjectId(projectRoot);
-  const lastSeen = entry => Date.parse(entry.last_seen || '') || 0;
-  const observerIdActive = entries.some(entry => entry.id === computedId)
-    || fs.existsSync(path.join(getProjectsDir(), computedId));
-  const chosenId = observerIdActive
-    ? computedId
-    : entries.reduce((latest, entry) => (lastSeen(entry) > lastSeen(latest) ? entry : latest)).id;
+// detect-project.sh creates instincts/ before it updates projects.json, so a
+// folder with instincts/ is one the observer writes to (a bare folder may be
+// one this module created).
+function hasObserverData(projectId) {
+  return fs.existsSync(path.join(getProjectsDir(), projectId, 'instincts'));
+}
 
+/**
+ * Choose the project id for a root that has registry entries.
+ *
+ * After a repository gains a remote, detect-project.sh writes under the
+ * remote-hash id while the old path-hash entry stays in the registry. Prefer
+ * the id the observer derives now when it is registered or already holds
+ * observer data; otherwise keep a sole entry, or take the most recently seen
+ * of several. When other ids remain for the root, say how to merge them.
+ */
+function pickRootProjectId(entries, projectRoot) {
+  const computedId = computeProjectId(projectRoot);
   const ids = entries.map(entry => entry.id);
+  const lastSeen = entry => Date.parse(entry.last_seen || '') || 0;
+  let chosenId;
+  if (ids.includes(computedId) || hasObserverData(computedId)) {
+    chosenId = computedId;
+  } else if (entries.length === 1) {
+    return ids[0];
+  } else {
+    chosenId = entries.reduce((latest, entry) => (lastSeen(entry) > lastSeen(latest) ? entry : latest)).id;
+  }
+
   const others = ids.filter(id => id !== chosenId);
-  process.stderr.write(
-    `[ecc] projects.json has ${entries.length} entries for ${projectRoot} (${ids.join(', ')}); using ${chosenId}. `
-    + `Merge the others with: ${others.map(id => `instinct-cli.py projects merge ${id} ${chosenId} --dry-run`).join('; ')}\n`
-  );
+  if (others.length > 0) {
+    process.stderr.write(
+      `[ecc] ${projectRoot} has project ids ${[chosenId, ...others].join(', ')}; using ${chosenId}. `
+      + `Merge the others with: ${others.map(id => `instinct-cli.py projects merge ${id} ${chosenId} --dry-run`).join('; ')}\n`
+    );
+  }
   return chosenId;
 }
 
@@ -135,9 +147,9 @@ function resolveProjectContext(cwd = process.cwd()) {
 
   const registry = readProjectRegistry();
   const rootEntries = Object.values(registry).filter(entry => entry && entry.id && path.resolve(entry.root || '') === projectRoot);
-  const projectId = rootEntries.length > 1
-    ? pickDuplicateRootId(rootEntries, projectRoot)
-    : rootEntries[0]?.id || computeProjectId(projectRoot);
+  const projectId = rootEntries.length > 0
+    ? pickRootProjectId(rootEntries, projectRoot)
+    : computeProjectId(projectRoot);
   const projectDir = path.join(getProjectsDir(), projectId);
   ensureDir(projectDir);
   const aliasProjectIds = rootEntries.map(entry => entry.id).filter(id => id !== projectId);

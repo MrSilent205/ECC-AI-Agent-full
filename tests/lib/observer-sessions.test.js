@@ -202,13 +202,13 @@ test('resolveProjectContext picks the most recently seen entry when no duplicate
 
     const { result, stderr } = resolveIn(storage, repo);
     assert.strictEqual(result.projectId, 'bbbbbbbbbbbb');
-    assert.ok(stderr.includes('3 entries'), stderr);
+    assert.ok(stderr.includes('instinct-cli.py projects merge aaaaaaaaaaaa bbbbbbbbbbbb --dry-run'), stderr);
   } finally {
     cleanup(root);
   }
 });
 
-test('resolveProjectContext prefers the observer id when its folder exists but projects.json lacks it', () => {
+test('resolveProjectContext prefers the observer id when its folder holds instincts but projects.json lacks it', () => {
   const root = createTempDir();
   try {
     const storage = path.join(root, 'store');
@@ -216,7 +216,7 @@ test('resolveProjectContext prefers the observer id when its folder exists but p
     initRepo(repo, 'git@github.com:Owner/Repo.git');
     const repoRoot = fs.realpathSync(repo);
     const remoteId = hashId('github.com/owner/repo');
-    fs.mkdirSync(path.join(storage, 'projects', remoteId), { recursive: true });
+    fs.mkdirSync(path.join(storage, 'projects', remoteId, 'instincts'), { recursive: true });
     writeRegistry(storage, [
       { id: 'aaaaaaaaaaaa', root: repoRoot, last_seen: '2026-10-01T00:00:00Z' },
       { id: 'bbbbbbbbbbbb', root: repoRoot, last_seen: '2026-10-20T00:00:00Z' },
@@ -225,6 +225,46 @@ test('resolveProjectContext prefers the observer id when its folder exists but p
     const { result } = resolveIn(storage, repo);
     assert.strictEqual(result.projectId, remoteId);
     assert.deepStrictEqual(result.aliasProjectIds, ['aaaaaaaaaaaa', 'bbbbbbbbbbbb']);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('resolveProjectContext moves off a sole legacy entry once the observer has written under the computed id', () => {
+  const root = createTempDir();
+  try {
+    const storage = path.join(root, 'store');
+    const repo = path.join(root, 'repo');
+    initRepo(repo, 'git@github.com:Owner/Repo.git');
+    const repoRoot = fs.realpathSync(repo);
+    const pathId = hashId(repoRoot);
+    const remoteId = hashId('github.com/owner/repo');
+    // The observer made projects/<remote id>/instincts but has not registered it yet.
+    fs.mkdirSync(path.join(storage, 'projects', remoteId, 'instincts'), { recursive: true });
+    writeRegistry(storage, [{ id: pathId, root: repoRoot, last_seen: '2026-10-20T00:00:00Z' }]);
+
+    const { result, stderr } = resolveIn(storage, repo);
+    assert.strictEqual(result.projectId, remoteId);
+    assert.deepStrictEqual(result.aliasProjectIds, [pathId]);
+    assert.ok(stderr.includes(`instinct-cli.py projects merge ${pathId} ${remoteId} --dry-run`), stderr);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('resolveProjectContext keeps a sole registry entry when the computed id folder has no observer data', () => {
+  const root = createTempDir();
+  try {
+    const storage = path.join(root, 'store');
+    const repo = path.join(root, 'repo');
+    initRepo(repo, 'git@github.com:Owner/Repo.git');
+    const repoRoot = fs.realpathSync(repo);
+    fs.mkdirSync(path.join(storage, 'projects', hashId('github.com/owner/repo')), { recursive: true });
+    writeRegistry(storage, [{ id: 'eeeeeeeeeeee', root: repoRoot, last_seen: '2026-10-20T00:00:00Z' }]);
+
+    const { result, stderr } = resolveIn(storage, repo);
+    assert.strictEqual(result.projectId, 'eeeeeeeeeeee');
+    assert.strictEqual(stderr, '');
   } finally {
     cleanup(root);
   }
