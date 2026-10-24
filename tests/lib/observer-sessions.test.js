@@ -208,6 +208,28 @@ test('resolveProjectContext picks the most recently seen entry when no duplicate
   }
 });
 
+test('resolveProjectContext prefers the observer id when its folder exists but projects.json lacks it', () => {
+  const root = createTempDir();
+  try {
+    const storage = path.join(root, 'store');
+    const repo = path.join(root, 'repo');
+    initRepo(repo, 'git@github.com:Owner/Repo.git');
+    const repoRoot = fs.realpathSync(repo);
+    const remoteId = hashId('github.com/owner/repo');
+    fs.mkdirSync(path.join(storage, 'projects', remoteId), { recursive: true });
+    writeRegistry(storage, [
+      { id: 'aaaaaaaaaaaa', root: repoRoot, last_seen: '2026-10-01T00:00:00Z' },
+      { id: 'bbbbbbbbbbbb', root: repoRoot, last_seen: '2026-10-20T00:00:00Z' },
+    ]);
+
+    const { result } = resolveIn(storage, repo);
+    assert.strictEqual(result.projectId, remoteId);
+    assert.deepStrictEqual(result.aliasProjectIds, ['aaaaaaaaaaaa', 'bbbbbbbbbbbb']);
+  } finally {
+    cleanup(root);
+  }
+});
+
 test('resolveProjectContext keeps a single registry entry even when its id differs from the computed one', () => {
   const root = createTempDir();
   try {
