@@ -85,8 +85,12 @@ function resolveProjectRoot(cwd = process.cwd()) {
   return '';
 }
 
+function getProjectRemoteUrl(projectRoot) {
+  return stripRemoteCredentials(runGit(['remote', 'get-url', 'origin'], projectRoot));
+}
+
 function computeProjectId(projectRoot) {
-  const remoteUrl = stripRemoteCredentials(runGit(['remote', 'get-url', 'origin'], projectRoot));
+  const remoteUrl = getProjectRemoteUrl(projectRoot);
   const hashInput = normalizeRemoteUrl(remoteUrl) || remoteUrl || projectRoot;
   return crypto.createHash('sha256').update(hashInput).digest('hex').slice(0, 12);
 }
@@ -99,9 +103,37 @@ function resolveProjectContext(cwd = process.cwd()) {
     return { projectId: 'global', projectRoot: '', projectDir, isGlobal: true };
   }
 
+  const computedId = computeProjectId(projectRoot);
+  const currentRemote = getProjectRemoteUrl(projectRoot);
   const registry = readProjectRegistry();
-  const registryEntry = Object.values(registry).find(entry => entry && path.resolve(entry.root || '') === projectRoot);
-  const projectId = registryEntry?.id || computeProjectId(projectRoot);
+  const matchingEntries = Object.values(registry).filter(
+    entry => entry && path.resolve(entry.root || '') === projectRoot
+  );
+
+  let projectId;
+  const matchingEntry = matchingEntries.find(entry => entry.id === computedId);
+  if (matchingEntry) {
+    projectId = matchingEntry.id;
+  } else if (matchingEntries.length > 0) {
+    const hasStaleNoRemoteEntry = currentRemote && matchingEntries.every(entry => !entry.remote);
+    if (hasStaleNoRemoteEntry) {
+      projectId = computedId;
+    } else {
+      projectId = matchingEntries[0].id;
+    }
+  } else {
+    projectId = computedId;
+  }
+
+  if (matchingEntries.length > 1) {
+    const alternate = matchingEntries.find(entry => entry.id !== projectId);
+    if (alternate) {
+      process.stderr.write(
+        `[ecc] Multiple registry entries found for ${projectRoot}; using ${projectId} (merge with: instinct-cli.py projects merge ${alternate.id} ${projectId} --dry-run)\n`
+      );
+    }
+  }
+
   const projectDir = path.join(getProjectsDir(), projectId);
   ensureDir(projectDir);
 
@@ -200,6 +232,7 @@ function stopObserverForContext(context) {
 module.exports = {
   getHomunculusDir,
   normalizeRemoteUrl,
+  computeProjectId,
   resolveProjectContext,
   getObserverActivityFile,
   getObserverPidFile,
