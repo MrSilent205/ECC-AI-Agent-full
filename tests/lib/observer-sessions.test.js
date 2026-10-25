@@ -7,6 +7,7 @@ const { spawnSync } = require('child_process');
 const {
   getHomunculusDir,
   normalizeRemoteUrl,
+  computeProjectId,
   resolveProjectContext,
 } = require('../../scripts/lib/observer-sessions');
 
@@ -123,6 +124,108 @@ test('resolveProjectContext gives SSH and HTTPS clones the same project id', () 
       const httpsContext = resolveProjectContext(httpsRepo);
       assert.strictEqual(sshContext.projectId, httpsContext.projectId);
       assert.strictEqual(sshContext.projectDir, httpsContext.projectDir);
+    });
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('resolveProjectContext prefers computed remote-hash id over older path-hash registry entry', () => {
+  const root = createTempDir();
+  try {
+    const storage = path.join(root, 'store');
+    const repo = path.join(root, 'my-repo');
+    initRepo(repo, 'https://github.com/owner/my-repo.git');
+
+    const expectedRemoteId = computeProjectId(repo);
+    const stalePathHashId = 'oldpathhash12';
+
+    // Simulate projects.json having an older entry created before remote was added
+    const registryPath = path.join(storage, 'projects.json');
+    fs.mkdirSync(storage, { recursive: true });
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        [stalePathHashId]: {
+          id: stalePathHashId,
+          name: 'my-repo',
+          root: repo,
+          remote: '',
+        },
+        [expectedRemoteId]: {
+          id: expectedRemoteId,
+          name: 'my-repo',
+          root: repo,
+          remote: 'https://github.com/owner/my-repo.git',
+        },
+      }, null, 2)
+    );
+
+    let stderrOutput = '';
+    const originalStderrWrite = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      stderrOutput += chunk;
+      return true;
+    };
+
+    try {
+      withEnv({
+        CLV2_HOMUNCULUS_DIR: storage,
+        XDG_DATA_HOME: undefined,
+        CLAUDE_PROJECT_DIR: undefined,
+      }, () => {
+        const context = resolveProjectContext(repo);
+        assert.strictEqual(context.projectId, expectedRemoteId);
+        assert.strictEqual(context.projectDir, path.join(storage, 'projects', expectedRemoteId));
+        assert.ok(
+          stderrOutput.includes(`Multiple registry entries found for ${repo}`),
+          'Expected warning on duplicate registry entries'
+        );
+        assert.ok(
+          stderrOutput.includes(`instinct-cli.py projects merge ${stalePathHashId} ${expectedRemoteId}`),
+          'Expected merge command guidance in warning'
+        );
+      });
+    } finally {
+      process.stderr.write = originalStderrWrite;
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('resolveProjectContext uses computed remote-hash id even if registry only contains pre-remote entry', () => {
+  const root = createTempDir();
+  try {
+    const storage = path.join(root, 'store');
+    const repo = path.join(root, 'my-repo');
+    initRepo(repo, 'https://github.com/owner/my-repo.git');
+
+    const expectedRemoteId = computeProjectId(repo);
+    const stalePathHashId = 'oldpathhash12';
+
+    const registryPath = path.join(storage, 'projects.json');
+    fs.mkdirSync(storage, { recursive: true });
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        [stalePathHashId]: {
+          id: stalePathHashId,
+          name: 'my-repo',
+          root: repo,
+          remote: '',
+        },
+      }, null, 2)
+    );
+
+    withEnv({
+      CLV2_HOMUNCULUS_DIR: storage,
+      XDG_DATA_HOME: undefined,
+      CLAUDE_PROJECT_DIR: undefined,
+    }, () => {
+      const context = resolveProjectContext(repo);
+      assert.strictEqual(context.projectId, expectedRemoteId);
+      assert.strictEqual(context.projectDir, path.join(storage, 'projects', expectedRemoteId));
     });
   } finally {
     cleanup(root);
