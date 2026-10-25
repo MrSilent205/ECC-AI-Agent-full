@@ -65,7 +65,7 @@ function resolveEccRoot(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   const configuredDir = options.configDir !== undefined
     ? options.configDir
-    : process.env.CLAUDE_CONFIG_DIR;
+    : (options.homeDir !== undefined ? '' : process.env.CLAUDE_CONFIG_DIR);
   const rawDir = typeof configuredDir === 'string' ? configuredDir.trim() : '';
   const expandedDir = rawDir === '~'
     ? homeDir
