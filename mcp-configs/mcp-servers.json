@@ -212,7 +212,7 @@
     "mnemosyne-os": {
       "command": "npx",
       "args": ["-y", "-p", "@mnemosyne_os/mcp", "mnemosyne-mcp"],
-      "description": "Opt-in local memory and agent dashboard from the Mnemosyne OS desktop app. Search fuses vectors with a local BM25 channel, one vault per folder the user declares, scoped by MNEMO_VAULTS. Agents post a status card on the user's canvas and can see other live sessions on the same worktree. Memory tools need the app running on ws://127.0.0.1:7799. Not enabled by default."
+      "description": "Opt-in local memory and agent dashboard from the Mnemosyne OS desktop app. Search fuses vectors with a local BM25 channel, one vault per folder the user declares, scoped by MNEMO_VAULTS. Agents post a status card on the user's canvas and can see other live sessions on the same worktree. Memory tools need the app running on ws://127.0.0.1:7799. Tool results, memory included, go to the MCP client. Not enabled by default."
     }
   },
   "_comments": {
