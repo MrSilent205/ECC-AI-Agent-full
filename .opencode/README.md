@@ -33,9 +33,20 @@ Add to your `opencode.json`:
 }
 ```
 
+OpenCode 2 reads the `plugins` key instead (an array of packages or
+`{ "package": "ecc-universal" }` entries) and also auto-discovers
+`.opencode/plugins/`. The published module exports one definition that satisfies
+both contracts, so the same package works on either version.
+
 This loads the ECC OpenCode plugin module from npm:
 - hook/event integrations
-- bundled custom tools exported by the plugin
+
+On OpenCode 1.18.29+ the plugin registers two tools (`changed-files` and
+`dependency-analyzer`). On OpenCode 2 the plugin registers no custom tools. The
+tool surface comes from the `.opencode/tools/*.ts` files that OpenCode discovers
+itself, so a project that installs only the npm package does not get them on
+OpenCode 2; copy the tools or use one of the setup paths below for the full
+catalog.
 
 It does **not** auto-register the full ECC command/agent/instruction catalog in your project config. For the full OpenCode setup, either:
 - run OpenCode inside this repository, or
@@ -69,6 +80,24 @@ node scripts/install-apply.js --target opencode --profile full
 Without `.opencode/dist/index.js`, OpenCode will detect the slash commands
 but silently skip plugin hooks and tools. The installer now fails fast with
 a pointer to this command if the build step is missing.
+
+## OpenCode Compatibility
+
+The plugin ships a single definition, `{ id, server, setup }`, that both plugin
+loaders understand:
+
+- **OpenCode 1.18.29 and newer** reads `server`, the `(input) => hooks` function
+  whose result is keyed by the event names in the hooks table below. 1.18.29 is
+  the first 1.x release whose loader understands an object entrypoint.
+- **OpenCode 2.x** reads `setup(ctx)` and registers the same behavior on the
+  context surfaces (`shell`, `tool`, `permission`, `session`, `event`).
+- **OpenCode older than 1.18.29 is not supported.** Those loaders iterate every
+  module export and require a bare function as the default, which the definition
+  object cannot also be.
+
+OpenCode loads every file under `.opencode/plugins/` independently and rejects
+duplicate plugin ids at activation, so each file exports its own `id`
+(`ecc.hooks` for the hooks, `ecc.index` for the barrel).
 
 ## Features
 
@@ -136,23 +165,22 @@ a pointer to this command if the build step is missing.
 
 ### Plugin Hooks
 
-| Hook | Event | Purpose |
-|------|-------|---------|
-| Prettier | `file.edited` | Auto-format JS/TS |
-| TypeScript | `tool.execute.after` | Check for type errors |
-| console.log | `file.edited` | Warn about debug statements |
-| Notification | `session.idle` | Desktop notification (cross-platform) |
-| Security | `tool.execute.before` | Check for secrets |
-| Git Push Reminder | `tool.execute.before` | Remind to review before pushing |
-| Doc File Warning | `tool.execute.before` | Warn about unnecessary documentation |
-| Long Command Reminder | `tool.execute.before` | Remind about long-running commands |
-| Session Context | `session.created` | Load project context |
-| Console Log Audit | `session.idle` | Audit edited files for console.log |
-| File Watcher | `file.watcher.updated` | Track file system changes |
-| Todo Progress | `todo.updated` | Log task completion progress |
-| Shell Environment | `shell.env` | Inject environment variables |
-| Session Compacting | `experimental.session.compacting` | Preserve context across compaction |
-| Permission Auto-Approve | `permission.ask` | Auto-approve safe operations |
+| Hook | OpenCode 1 event | OpenCode 2 registration | Purpose |
+|------|------------------|--------------------------|---------|
+| Prettier | `file.edited` | event `file.edited` | Auto-format JS/TS |
+| TypeScript | `tool.execute.after` | `ctx.tool.hook("execute.after")` | Check for type errors |
+| console.log | `file.edited` | event `file.edited` | Warn about debug statements |
+| Notification | `session.idle` | event `session.idle` | Desktop notification (cross-platform) |
+| Git Push Reminder | `tool.execute.before` | `ctx.tool.hook("execute.before")` | Remind to review before pushing |
+| Doc File Warning | `tool.execute.before` | `ctx.tool.hook("execute.before")` | Warn about unnecessary documentation |
+| Long Command Reminder | `tool.execute.before` | `ctx.tool.hook("execute.before")` | Remind about long-running commands |
+| Session Context | `session.created` | event `session.created` | Load project context |
+| Console Log Audit | `session.idle` | event `session.idle` | Audit edited files for console.log |
+| File Watcher | `file.watcher.updated` | event `filesystem.changed` | Track file system changes |
+| Todo Progress | `todo.updated` | — (no OpenCode 2 equivalent) | Log task completion progress |
+| Shell Environment | `shell.env` | `ctx.shell.hook("create.before")` | Inject environment variables |
+| Session Compacting | `experimental.session.compacting` | `ctx.session.hook("compaction")` | Preserve context across compaction |
+| Permission Auto-Approve | `permission.ask` | `ctx.permission.hook("evaluate")` | Relax `ask` to `allow` for safe operations |
 
 ### Custom Tools
 
@@ -171,15 +199,17 @@ a pointer to this command if the build step is missing.
 
 OpenCode's plugin system maps to Claude Code hooks:
 
-| Claude Code | OpenCode |
-|-------------|----------|
-| PreToolUse | `tool.execute.before` |
-| PostToolUse | `tool.execute.after` |
-| Stop | `session.idle` |
-| SessionStart | `session.created` |
-| SessionEnd | `session.deleted` |
+| Claude Code | OpenCode 1 event | OpenCode 2 registration |
+|-------------|------------------|--------------------------|
+| PreToolUse | `tool.execute.before` | `ctx.tool.hook("execute.before")` |
+| PostToolUse | `tool.execute.after` | `ctx.tool.hook("execute.after")` |
+| Stop | `session.idle` | event `session.idle` |
+| SessionStart | `session.created` | event `session.created` |
+| SessionEnd | `session.deleted` | event `session.deleted` |
 
-OpenCode has 20+ additional events not available in Claude Code.
+OpenCode 2 reports file changes as `filesystem.changed` (OpenCode 1 called the
+same idea `file.watcher.updated`) and has no `todo.updated` event, so the todo
+progress hook is OpenCode 1 only.
 
 ### Hook Runtime Controls
 
@@ -246,3 +276,10 @@ Home-target installations keep `plugins/index.ts` inert even with hooks enabled.
 OpenCode automatically loads `plugins/ecc-hooks.ts`; loading the barrel as well
 would initialize every ECC hook twice. The source and published package barrel
 remain available for module imports.
+
+Declining the hook capability during install replaces each disabled plugin file
+with an inert placeholder. The placeholder satisfies both contracts (an inert
+`server` and `setup`) and derives its id from the entrypoint's path inside
+`plugins/`, because OpenCode 2 rejects duplicate ids across the files it
+auto-discovers and two entrypoints can share a basename (`plugins/index.ts` and
+`plugins/custom/index.ts`).

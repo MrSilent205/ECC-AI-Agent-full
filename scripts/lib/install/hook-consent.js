@@ -87,10 +87,46 @@ function isOpenCodePluginEntrypoint(operation = {}) {
   return getOpenCodeSourceActivationKind(operation) === 'plugin';
 }
 
-function getDisabledOpenCodePluginContent() {
+function getDisabledOpenCodePluginContent(sourceRelativePath = '.opencode/plugins/index.ts') {
   // OpenCode discovers plugins independently of opencode.json registration.
   // Do not import the original module: even module initialization has effects.
-  return 'export default async () => ({});\n';
+  //
+  // The placeholder has to satisfy both supported contracts: OpenCode 1.18.29+
+  // reads `server`, while OpenCode 2 reads `setup` and refuses a bare function
+  // default export. OpenCode 2 also refuses duplicate plugin ids across the
+  // files it auto-discovers, so the id is derived from the entrypoint's path
+  // inside `plugins/`: two entrypoints can share a basename
+  // (`plugins/index.ts` and `plugins/custom/index.js`) while remaining distinct
+  // plugins, and a basename-derived id made the second one collide. Slicing at
+  // the last `plugins/` segment keeps the source path, the compiled `dist/`
+  // path and a destination path naming the same entrypoint on the same id.
+  const relative = normalizeOperationPath(sourceRelativePath);
+  // Use the last `plugins/` segment so paths outside the repo tree cannot
+  // steal a shorter prefix and so `/home/u/plugins/work/.../plugins/index.ts`
+  // still maps to the same id as `.opencode/plugins/index.ts`.
+  const parts = relative.split('/plugins/');
+  const withinPlugins = parts.length > 1 ? parts[parts.length - 1] : relative;
+  const withoutExt = String(withinPlugins || '').replace(/\.[^.]+$/, '');
+  // Path segments are joined with `_`, so a separator in
+  // `plugins/custom/index.js` must not collide with a literal separator in a
+  // filename such as `plugins/custom-index.js` or `plugins/custom--index.js`:
+  // every existing `_` in a segment is doubled first, which keeps
+  // `custom/index`, `custom_index`, `custom-index` and `custom--index` apart
+  // while leaving `plugins/index.ts` and `plugins/custom/index.js` distinct.
+  const stem = withoutExt
+    .replace(/_/g, '__')
+    .replace(/\\/g, '_')
+    .replace(/\//g, '_')
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'plugin';
+  return [
+    'export default {',
+    `  id: "ecc.disabled.${stem}",`,
+    '  server: async () => ({}),',
+    '  setup: () => {},',
+    '};',
+    '',
+  ].join('\n');
 }
 
 function isOpenCodeHookActivationOperation(operation = {}) {

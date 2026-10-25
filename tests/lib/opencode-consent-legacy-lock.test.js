@@ -11,7 +11,7 @@ const { assertFilePostimage } = require('./helpers/assert-file-postimage');
 const fileSystem = { ...fs };
 const load = createFileSystemLoader(fileSystem);
 const { applyInstallPlan } = load(require.resolve('../../scripts/lib/install/apply'));
-const { withHookConsent } = require('../../scripts/lib/install/hook-consent');
+const { withHookConsent, getDisabledOpenCodePluginContent } = require('../../scripts/lib/install/hook-consent');
 const { repairInstalledStates, buildDoctorReport } = load(require.resolve('../../scripts/lib/install-lifecycle'));
 const { createInstallState, readInstallState, writeInstallState } = require('../../scripts/lib/install-state');
 const { withOpenCodeInstallLocks } = load(require.resolve('../../scripts/lib/install/opencode-install-lock'));
@@ -325,7 +325,7 @@ function runTests() {
       assert.ok(!state.resolution.selectedModules.includes('hooks-runtime'));
       assert.notStrictEqual(state.request.hookConsent, 'enabled');
       assert.strictEqual(fs.readFileSync(path.join(value.canonicalRoot, 'plugins/ecc-hooks.ts'), 'utf8'),
-        'export default async () => ({});\n');
+        getDisabledOpenCodePluginContent('ecc-hooks.ts'));
       assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(value.canonicalRoot, 'opencode.json'))).plugin, []);
       for (const relative of ['opencode.json', 'plugins/ecc-hooks.ts', 'ecc-install-state.json']) {
         assert.strictEqual(fs.existsSync(path.join(value.legacyRoot, relative)), false);

@@ -9,6 +9,7 @@ const {
   assertHookConsentReady,
   disableOpenCodeHookPluginRegistration,
   formatHookCapabilityDisclosure,
+  getDisabledOpenCodePluginContent,
   getRecordedHookConsent,
   isHookRuntimeOperation,
   isOpenCodePluginEntrypoint,
@@ -162,6 +163,40 @@ function runTests() {
       kind: 'copy-file', moduleId: 'platform-configs',
       sourceRelativePath: '.opencode/plugins/helpers/readme.md',
     }), false);
+  })) passed++; else failed++;
+
+  if (test('disabled OpenCode placeholders derive distinct ids from the full entrypoint path', () => {
+    const moduleIds = (sourceRelativePath) => {
+      const content = getDisabledOpenCodePluginContent(sourceRelativePath);
+      const match = content.match(/id: "([^"]+)"/);
+      assert.ok(match, `placeholder for ${sourceRelativePath} has no id`);
+      return match[1];
+    };
+
+    const barrel = moduleIds('.opencode/plugins/index.ts');
+    const nested = moduleIds('.opencode/plugins/custom/index.js');
+    const flat = moduleIds('.opencode/plugins/custom-index.js');
+    const doubleFlat = moduleIds('.opencode/plugins/custom--index.js');
+    const underscoreFlat = moduleIds('.opencode/plugins/custom_index.js');
+    assert.strictEqual(barrel, 'ecc.disabled.index');
+    assert.strictEqual(nested, 'ecc.disabled.custom_index');
+    assert.strictEqual(flat, 'ecc.disabled.custom-index');
+    assert.strictEqual(doubleFlat, 'ecc.disabled.custom--index');
+    assert.strictEqual(underscoreFlat, 'ecc.disabled.custom__index');
+    assert.notStrictEqual(nested, flat, 'plugins/custom/index.js and plugins/custom-index.js must not share an id');
+    assert.notStrictEqual(nested, doubleFlat, 'plugins/custom/index.js and plugins/custom--index.js must not share an id');
+    assert.notStrictEqual(flat, doubleFlat, 'a literal double hyphen in a filename must not collide with a path separator');
+    assert.notStrictEqual(barrel, nested, 'entrypoints sharing a basename must not share an id');
+
+    // The compiled dist layout names the same entrypoints and must not collide
+    // with their sources either.
+    assert.strictEqual(moduleIds('.opencode/dist/plugins/index.js'), barrel);
+    // Backslashes from a Windows plan denote the same entrypoint.
+    assert.strictEqual(moduleIds('.opencode\\plugins\\index.ts'), barrel);
+    // apply.js can pass a destination path when the plan has no source path; it
+    // names the same entrypoint and must therefore yield the same id.
+    assert.strictEqual(moduleIds('/home/u/.config/opencode/plugins/index.ts'), barrel);
+    assert.strictEqual(moduleIds('/home/u/plugins/work/.config/opencode/plugins/index.ts'), barrel);
   })) passed++; else failed++;
 
   if (test('detects hook materialization from plan operations only', () => {

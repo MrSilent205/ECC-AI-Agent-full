@@ -40,7 +40,12 @@ try {
     const loaded = [];
     for (const name of fs.readdirSync(path.join(root, 'plugins')).filter(name => /\\.ts$/.test(name))) {
       const mod = await import(pathToFileURL(path.join(root, 'plugins', name)).href);
-      for (const entry of new Set(Object.values(mod))) loaded.push(await entry(context));
+      // Mirrors the OpenCode 1.18.29+ loader: the module default is either a
+      // bare plugin function or a definition carrying one as its server entry.
+      // Later OpenCode versions read setup instead and are covered elsewhere.
+      const definition = mod.default;
+      if (typeof definition === 'function') loaded.push(await definition(context));
+      else if (definition && typeof definition.server === 'function') loaded.push(await definition.server(context));
     }
     const live = loaded.filter(hooks => typeof hooks['tool.execute.after'] === 'function');
     assert.equal(live.length, 1, 'Local discovery must register exactly one live ECC plugin');

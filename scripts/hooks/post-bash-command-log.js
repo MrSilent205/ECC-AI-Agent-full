@@ -46,12 +46,13 @@ function appendLine(filePath, line) {
 // way `scripts/lib/agent-data-home.js` expands it, so a profile written as
 // `~/.claude-work` resolves to one place rather than two.
 function claudeConfigDir() {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || os.homedir();
   const configured = process.env.CLAUDE_CONFIG_DIR;
   const trimmed = configured ? String(configured).trim() : '';
-  if (!trimmed) return path.join(os.homedir(), '.claude');
+  if (!trimmed) return path.join(homeDir, '.claude');
   if (trimmed.startsWith('~')) {
     const remainder = trimmed.slice(1).replace(/^[/\\]+/, '');
-    return remainder ? path.join(os.homedir(), remainder) : os.homedir();
+    return remainder ? path.join(homeDir, remainder) : homeDir;
   }
   return path.resolve(trimmed);
 }
